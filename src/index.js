@@ -2,6 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
+if (!process.env.DATABASE_URL) {
+  console.error('FATAL: DATABASE_URL is not set. Set it in your environment or .env file.');
+  process.exit(1);
+}
+
 const tradersRouter = require('./routes/traders');
 const checkoutRouter = require('./routes/checkout');
 const webhookRouter = require('./routes/webhook');
