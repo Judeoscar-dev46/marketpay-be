@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Trader {
+  id                   String        @id @default(cuid())
+  name                 String
+  business             String
+  market               String
+  phone                String?
+  avatar               String?
+  mainVirtualAccountId String
+  mainAccountNumber    String
+  supplierAccountId    String
+  supplierAccountNumber String
+  savingsAccountId     String
+  savingsAccountNumber String
+  transactions         Transaction[]
+  dailyLedger          DailyLedger[]
+  createdAt            DateTime      @default(now())
+}
+
+model Transaction {
+  id             String          @id @default(cuid())
+  traderId       String
+  trader         Trader          @relation(fields: [traderId], references: [id])
+  amount         Int
+  status         String          @default("pending")
+  checkoutRef    String?
+  checkoutUrl    String?
+  webhookRef     String?         @unique
+  workingCapital Int?
+  supplierAmount Int?
+  savingsAmount  Int?
+  splitTransfers SplitTransfer[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+model SplitTransfer {
+  id            String      @id @default(cuid())
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+  type          String
+  amount        Int
+  transferRef   String?
+  status        String      @default("pending")
+  createdAt     DateTime    @default(now())
+}
+
+model DailyLedger {
+  id               String   @id @default(cuid())
+  traderId         String
+  trader           Trader   @relation(fields: [traderId], references: [id])
+  date             DateTime @db.Date
+  totalSales       Int      @default(0)
+  totalSupplier    Int      @default(0)
+  totalSavings     Int      @default(0)
+  totalTillBalance Int      @default(0)
+  txCount          Int      @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([traderId, date])
+}

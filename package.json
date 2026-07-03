@@ -1,0 +1,33 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "build": "node -r dotenv/config node_modules/prisma/build/index.js generate",
+    "postinstall": "node node_modules/prisma/build/index.js generate",
+    "db:migrate": "node -r dotenv/config node_modules/prisma/build/index.js migrate deploy",
+    "db:push": "node -r dotenv/config node_modules/prisma/build/index.js db push",
+    "db:seed": "node -r dotenv/config prisma/seed.js",
+    "db:studio": "node -r dotenv/config node_modules/prisma/build/index.js studio"
+  },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
+    "axios": "^1.18.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "pg": "^8.22.0",
+    "prisma": "^7.8.0",
+    "uuid": "^14.0.1"
+  }
+}
