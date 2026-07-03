@@ -1,17 +1,25 @@
-const { Pool, neonConfig } = require('@neondatabase/serverless');
+const { Pool } = require('pg');
 const { PrismaClient } = require('@prisma/client');
-const { PrismaNeon } = require('@prisma/adapter-neon');
+const { PrismaPg } = require('@prisma/adapter-pg');
 
-const url = process.env.DATABASE_URL;
-console.log('DB init — DATABASE_URL set:', !!url, '| host:', url ? new URL(url).hostname : 'MISSING');
+const rawUrl = process.env.DATABASE_URL;
+if (!rawUrl) throw new Error('DATABASE_URL is not set');
 
-// In Node.js < 21, globalThis.WebSocket is not available — use the ws package
-if (!globalThis.WebSocket) {
-  neonConfig.webSocketConstructor = require('ws');
-}
+const parsed = new URL(rawUrl);
 
-const pool = new Pool({ connectionString: url });
-const adapter = new PrismaNeon(pool);
+const pool = new Pool({
+  host: parsed.hostname,
+  port: Number(parsed.port) || 5432,
+  user: decodeURIComponent(parsed.username),
+  password: decodeURIComponent(parsed.password),
+  database: parsed.pathname.replace(/^\//, ''),
+  ssl: { rejectUnauthorized: false },
+  max: 5,
+  connectionTimeoutMillis: 30000,
+  idleTimeoutMillis: 30000,
+});
+
+const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 module.exports = prisma;
