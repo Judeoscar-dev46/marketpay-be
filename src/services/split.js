@@ -35,8 +35,8 @@ async function processPayment(transactionId) {
   if (!tx || tx.status !== 'confirmed') return;
 
   const total = tx.amount;
-  const supplierAmt = Math.floor(total * 0.2);
-  const savingsAmt = Math.floor(total * 0.1);
+  const supplierAmt = Math.floor(total * (tx.trader.supplierPct / 100));
+  const savingsAmt = Math.floor(total * (tx.trader.savingsPct / 100));
   const tillAmt = total - supplierAmt - savingsAmt;
 
   const [supplierResult, savingsResult] = await Promise.allSettled([

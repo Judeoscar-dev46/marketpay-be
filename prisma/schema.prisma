@@ -20,6 +20,9 @@ model Trader {
   supplierAccountNumber String
   savingsAccountId     String
   savingsAccountNumber String
+  tillPct              Int           @default(70)
+  supplierPct          Int           @default(20)
+  savingsPct           Int           @default(10)
   transactions         Transaction[]
   dailyLedger          DailyLedger[]
   createdAt            DateTime      @default(now())

@@ -124,4 +124,36 @@ router.post('/:traderId/pay-supplier', async (req, res) => {
   }
 });
 
+// PATCH /api/traders/:traderId/split — update split percentages
+router.patch('/:traderId/split', async (req, res) => {
+  const { traderId } = req.params;
+  const { tillPct, supplierPct, savingsPct } = req.body;
+
+  const pcts = [tillPct, supplierPct, savingsPct];
+  if (pcts.some((p) => !Number.isInteger(p) || p < 1)) {
+    return res.status(400).json({ error: 'All percentages must be integers of at least 1' });
+  }
+  if (tillPct + supplierPct + savingsPct !== 100) {
+    return res.status(400).json({ error: 'Percentages must sum to 100' });
+  }
+
+  try {
+    const trader = await prisma.trader.update({
+      where: { id: traderId },
+      data: { tillPct, supplierPct, savingsPct },
+      select: {
+        id: true, name: true, business: true, market: true, avatar: true, phone: true,
+        mainVirtualAccountId: true, mainAccountNumber: true,
+        supplierAccountId: true, supplierAccountNumber: true,
+        savingsAccountId: true, savingsAccountNumber: true,
+        tillPct: true, supplierPct: true, savingsPct: true,
+      },
+    });
+    res.json({ data: trader });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update split percentages' });
+  }
+});
+
 module.exports = router;

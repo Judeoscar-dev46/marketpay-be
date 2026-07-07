@@ -20,6 +20,9 @@ const TRADER_SELECT = {
   supplierAccountNumber: true,
   savingsAccountId: true,
   savingsAccountNumber: true,
+  tillPct: true,
+  supplierPct: true,
+  savingsPct: true,
 };
 
 // POST /api/auth/register
