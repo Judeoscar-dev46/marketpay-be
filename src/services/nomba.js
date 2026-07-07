@@ -63,6 +63,7 @@ async function createCheckout({ amount, reference, callbackUrl }) {
     `${BASE_URL}/checkout/order`,
     {
       order: {
+        orderReference: reference,
         amount: amountNaira,
         currency: 'NGN',
         callbackUrl: callbackUrl || process.env.NOMBA_CALLBACK_URL || 'https://example.com',
@@ -103,6 +104,27 @@ async function initiateTransfer({ from, to, amount, reference }) {
   };
 }
 
+async function payToBank({ fromAccountId, accountNumber, bankCode, amount, reference, narration }) {
+  if (process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID) {
+    return { transferRef: `stub-payout-${reference}` };
+  }
+  const token = await getAccessToken();
+  const res = await axios.post(
+    `${BASE_URL}/transfers/bank`,
+    {
+      sourceAccountId: fromAccountId,
+      destinationAccountNumber: accountNumber,
+      destinationBankCode: bankCode,
+      amount,
+      currency: 'NGN',
+      reference,
+      narration: narration || `MarketPay supplier payout ${reference}`,
+    },
+    { headers: authHeaders(token) }
+  );
+  return { transferRef: res.data.data?.transferReference || reference };
+}
+
 function verifyWebhookSignature(rawBody, signatureHeader) {
   const secret = process.env.NOMBA_WEBHOOK_SECRET;
   if (!secret) return true;
@@ -122,5 +144,6 @@ module.exports = {
   createVirtualAccount,
   createCheckout,
   initiateTransfer,
+  payToBank,
   verifyWebhookSignature,
 };

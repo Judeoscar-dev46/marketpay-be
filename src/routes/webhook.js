@@ -5,6 +5,50 @@ const { processPayment } = require('../services/split');
 
 const router = express.Router();
 
+// GET /api/webhook/nomba — browser redirect from Nomba after payment completes
+// Nomba sends: ?orderId=...&orderReference=<our tx.id>
+router.get('/nomba', async (req, res) => {
+  const { orderReference } = req.query;
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+  if (!orderReference) {
+    return res.redirect(`${frontendUrl}/dashboard`);
+  }
+
+  try {
+    const tx = await prisma.transaction.findFirst({
+      where: {
+        OR: [{ id: orderReference }, { checkoutRef: orderReference }],
+        status: 'pending',
+      },
+    });
+
+    if (!tx) {
+      console.log('Callback: no pending tx for orderReference', orderReference);
+      return res.redirect(`${frontendUrl}/dashboard`);
+    }
+
+    await prisma.transaction.update({
+      where: { id: tx.id },
+      data: {
+        status: 'confirmed',
+        webhookRef: `callback-${orderReference}`,
+      },
+    });
+
+    // Run splits synchronously before redirect
+    await processPayment(tx.id).catch((err) =>
+      console.error('Split processing failed for tx', tx.id, err)
+    );
+
+    return res.redirect(`${frontendUrl}/payment-done`);
+  } catch (err) {
+    console.error('Callback redirect error:', err);
+    return res.redirect(`${frontendUrl}/dashboard`);
+  }
+});
+
+// POST /api/webhook/nomba — server-to-server webhook from Nomba
 // Must use express.raw() on this route — mounted in index.js before express.json()
 router.post('/nomba', express.raw({ type: 'application/json' }), async (req, res) => {
   const rawBody = req.body;

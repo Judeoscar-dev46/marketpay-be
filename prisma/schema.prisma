@@ -11,7 +11,8 @@ model Trader {
   name                 String
   business             String
   market               String
-  phone                String?
+  phone                String?   @unique
+  pinHash              String?
   avatar               String?
   mainVirtualAccountId String
   mainAccountNumber    String
