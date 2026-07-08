@@ -44,7 +44,7 @@ async function createVirtualAccount({ name, reference }) {
     `${BASE_URL}/accounts/virtual`,
     {
       accountName: name,
-      accountReference: safeReference,
+      accountRef: safeReference,
     },
     { headers: authHeaders(token) }
   );
