@@ -49,9 +49,10 @@ async function createVirtualAccount({ name, reference }) {
     { headers: authHeaders(token) }
   );
   if (res.data.code !== '00') {
-    console.error('Nomba createVirtualAccount full response:', JSON.stringify(res.data));
+    console.error('Nomba createVirtualAccount error response:', JSON.stringify(res.data));
     throw new Error(`Nomba createVirtualAccount failed: ${res.data.code} — ${res.data.description}`);
   }
+  console.log('Nomba createVirtualAccount success response:', JSON.stringify(res.data));
   const d = res.data.data;
   return {
     accountId: d.accountId,
