@@ -52,11 +52,10 @@ async function createVirtualAccount({ name, reference }) {
     console.error('Nomba createVirtualAccount error response:', JSON.stringify(res.data));
     throw new Error(`Nomba createVirtualAccount failed: ${res.data.code} — ${res.data.description}`);
   }
-  console.log('Nomba createVirtualAccount success response:', JSON.stringify(res.data));
   const d = res.data.data;
   return {
-    accountId: d.accountId,
-    accountNumber: d.accountNumber,
+    accountId: d.accountRef,
+    accountNumber: d.bankAccountNumber,
   };
 }
 
