@@ -19,7 +19,15 @@ const publicRouter = require('./routes/public');
 
 const app = express();
 
-app.use(cors({ origin: '*' }));
+const allowedOrigins = process.env.FRONTEND_URL
+  ? process.env.FRONTEND_URL.split(',').map((o) => o.trim())
+  : true; // allow all in dev when FRONTEND_URL is not set
+
+app.use(cors({
+  origin: allowedOrigins,
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
 
 app.use('/api/webhook', webhookRouter);
 

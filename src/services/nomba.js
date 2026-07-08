@@ -39,15 +39,19 @@ function authHeaders(token) {
 
 async function createVirtualAccount({ name, reference }) {
   const token = await getAccessToken();
+  const safeReference = reference.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9_-]/g, '');
   const res = await axios.post(
     `${BASE_URL}/accounts/virtual`,
     {
       accountName: name,
-      accountReference: reference,
+      accountReference: safeReference,
       bvn: process.env.NOMBA_DEMO_BVN || '12345678901',
     },
     { headers: authHeaders(token) }
   );
+  if (res.data.code !== '00') {
+    throw new Error(`Nomba createVirtualAccount failed: ${res.data.code} — ${res.data.description}`);
+  }
   const d = res.data.data;
   return {
     accountId: d.accountId,

@@ -91,7 +91,7 @@ router.post('/register', async (req, res) => {
 
     res.status(201).json({ data: trader });
   } catch (err) {
-    console.error(err);
+    console.error('Registration error:', err?.response?.data || err.message || err);
     res.status(500).json({ error: 'Registration failed. Try again.' });
   }
 });
