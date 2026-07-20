@@ -1,7 +1,14 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
+const { requireAuth, requireTrader } = require('../middleware/auth');
 
 const router = express.Router();
+
+router.use(requireAuth, requireTrader);
+router.use('/:traderId', (req, res, next) => {
+  if (req.auth.id !== req.params.traderId) return res.status(403).json({ error: 'Not authorized for this trader account' });
+  next();
+});
 
 // GET /api/ledger/:traderId/today
 router.get('/:traderId/today', async (req, res) => {

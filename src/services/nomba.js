@@ -5,6 +5,10 @@ const BASE_URL = process.env.NOMBA_BASE_URL || 'https://api.nomba.com/v1';
 let _accessToken = null;
 let _tokenExpiry = 0;
 
+function isStub() {
+  return process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
+}
+
 async function getAccessToken() {
   if (_accessToken && Date.now() < _tokenExpiry) return _accessToken;
 
@@ -60,6 +64,9 @@ async function createVirtualAccount({ name, reference }) {
 }
 
 async function createCheckout({ amount, reference, callbackUrl }) {
+  if (isStub()) {
+    return { checkoutUrl: `https://checkout.stub.marketpay.app/${reference}`, checkoutRef: reference };
+  }
   const token = await getAccessToken();
   const amountNaira = (amount / 100).toFixed(2);
 
@@ -89,6 +96,9 @@ async function createCheckout({ amount, reference, callbackUrl }) {
 }
 
 async function initiateTransfer({ from, to, amount, reference }) {
+  if (isStub() || from?.startsWith('stub-') || to?.startsWith('stub-')) {
+    return { transferRef: `stub-transfer-${reference}` };
+  }
   const token = await getAccessToken();
   const res = await axios.post(
     `${BASE_URL}/transfers`,
@@ -109,7 +119,7 @@ async function initiateTransfer({ from, to, amount, reference }) {
 }
 
 async function payToBank({ fromAccountId, accountNumber, bankCode, amount, reference, narration }) {
-  if (process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID) {
+  if (isStub()) {
     return { transferRef: `stub-payout-${reference}` };
   }
   const token = await getAccessToken();
@@ -131,17 +141,49 @@ async function payToBank({ fromAccountId, accountNumber, bankCode, amount, refer
 
 function verifyWebhookSignature(rawBody, signatureHeader) {
   const secret = process.env.NOMBA_WEBHOOK_SECRET;
-  if (!secret) return true;
+  if (!secret) {
+    // Fail closed outside dev/stub mode — an unsigned webhook must never be trusted in production.
+    return isStub() || process.env.NODE_ENV !== 'production';
+  }
+  if (!signatureHeader) return false;
 
-  const computed = crypto
-    .createHmac('sha512', secret)
-    .update(rawBody)
-    .digest('hex');
+  try {
+    const computed = crypto
+      .createHmac('sha512', secret)
+      .update(rawBody)
+      .digest('hex');
 
-  return crypto.timingSafeEqual(
-    Buffer.from(computed, 'hex'),
-    Buffer.from(signatureHeader, 'hex')
-  );
+    const computedBuf = Buffer.from(computed, 'hex');
+    const givenBuf = Buffer.from(signatureHeader, 'hex');
+    if (computedBuf.length !== givenBuf.length) return false;
+
+    return crypto.timingSafeEqual(computedBuf, givenBuf);
+  } catch {
+    return false;
+  }
+}
+
+// Resolves a bank account number to its registered account name, so a trader can confirm
+// they're adding the right supplier before the record (and future money) is saved.
+async function resolveAccountName({ accountNumber, bankCode }) {
+  if (isStub()) {
+    return { accountName: 'Verified Test Supplier Ltd', verified: false };
+  }
+  try {
+    const token = await getAccessToken();
+    const res = await axios.post(
+      `${BASE_URL}/accounts/resolve`,
+      { accountNumber, bankCode },
+      { headers: authHeaders(token) }
+    );
+    if (res.data.code !== '00') throw new Error(res.data.description || 'resolve failed');
+    return { accountName: res.data.data?.accountName, verified: true };
+  } catch (err) {
+    // Degrade gracefully — Nomba may not expose this endpoint. The trader-entered name
+    // is used instead, just flagged as unverified rather than blocking supplier creation.
+    console.warn('Nomba resolveAccountName unavailable, falling back to unverified:', err.message);
+    return { accountName: null, verified: false };
+  }
 }
 
 module.exports = {
@@ -150,4 +192,5 @@ module.exports = {
   initiateTransfer,
   payToBank,
   verifyWebhookSignature,
+  resolveAccountName,
 };

@@ -1,10 +1,18 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const nomba = require('../services/nomba');
+const { requireAuth, requireTrader } = require('../middleware/auth');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
 
 const router = express.Router();
+
+router.use(requireAuth, requireTrader);
+
+function requireOwnTrader(req, res, next) {
+  if (req.auth.id !== req.params.traderId) return res.status(403).json({ error: 'Not authorized for this trader account' });
+  next();
+}
 
 // GET /api/traders — list all traders
 router.get('/', async (req, res) => {
@@ -78,7 +86,7 @@ router.post('/', async (req, res) => {
 });
 
 // GET /api/traders/:traderId/supplier-balance — total supplier fund accumulated
-router.get('/:traderId/supplier-balance', async (req, res) => {
+router.get('/:traderId/supplier-balance', requireOwnTrader, async (req, res) => {
   const { traderId } = req.params;
   try {
     const { _sum } = await prisma.transaction.aggregate({
@@ -93,7 +101,7 @@ router.get('/:traderId/supplier-balance', async (req, res) => {
 });
 
 // POST /api/traders/:traderId/pay-supplier — initiate bank transfer from supplier fund
-router.post('/:traderId/pay-supplier', async (req, res) => {
+router.post('/:traderId/pay-supplier', requireOwnTrader, async (req, res) => {
   const { traderId } = req.params;
   const { accountNumber, bankCode, bankName, amount } = req.body;
   if (!accountNumber || !bankCode || !amount || amount <= 0) {
@@ -125,7 +133,7 @@ router.post('/:traderId/pay-supplier', async (req, res) => {
 });
 
 // PATCH /api/traders/:traderId/split — update split percentages
-router.patch('/:traderId/split', async (req, res) => {
+router.patch('/:traderId/split', requireOwnTrader, async (req, res) => {
   const { traderId } = req.params;
   const { tillPct, supplierPct, savingsPct } = req.body;
 

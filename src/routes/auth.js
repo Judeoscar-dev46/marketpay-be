@@ -2,6 +2,8 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const prisma = require('../lib/prisma');
 const nomba = require('../services/nomba');
+const otp = require('../services/otp');
+const { issueSession } = require('../middleware/auth');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
 
@@ -89,7 +91,8 @@ router.post('/register', async (req, res) => {
       select: TRADER_SELECT,
     });
 
-    res.status(201).json({ data: trader });
+    const token = issueSession({ id: trader.id, role: 'trader' });
+    res.status(201).json({ data: trader, token });
   } catch (err) {
     console.error('Registration error:', err?.response?.data || err.message || err);
     res.status(500).json({ error: 'Registration failed. Try again.' });
@@ -115,10 +118,65 @@ router.post('/login', async (req, res) => {
     }
 
     const { pinHash: _, ...traderData } = trader;
-    res.json({ data: traderData });
+    const token = issueSession({ id: traderData.id, role: 'trader' });
+    res.json({ data: traderData, token });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Login failed. Try again.' });
+  }
+});
+
+// POST /api/auth/otp/send — { phone, role: 'trader' | 'supplier' }
+router.post('/otp/send', async (req, res) => {
+  const { phone, role } = req.body;
+  if (!phone?.trim() || !['trader', 'supplier'].includes(role)) {
+    return res.status(400).json({ error: 'phone and a valid role are required' });
+  }
+  try {
+    await otp.sendOtp(phone.trim(), `${role}_login`);
+    res.json({ data: { sent: true } });
+  } catch (err) {
+    console.error('OTP send error:', err?.response?.data || err.message || err);
+    res.status(500).json({ error: 'Failed to send verification code. Try again.' });
+  }
+});
+
+// POST /api/auth/otp/verify — { phone, code, role: 'trader' | 'supplier' }
+// Supplier: finds-or-creates a SupplierUser by phone — no shop setup needed on this path.
+// Trader: OTP is an alternate login for an existing PIN-registered trader, not a replacement.
+router.post('/otp/verify', async (req, res) => {
+  const { phone, code, role } = req.body;
+  if (!phone?.trim() || !code?.trim() || !['trader', 'supplier'].includes(role)) {
+    return res.status(400).json({ error: 'phone, code, and a valid role are required' });
+  }
+
+  const result = await otp.verifyOtp(phone.trim(), code.trim(), `${role}_login`);
+  if (!result.ok) return res.status(401).json({ error: result.error });
+
+  try {
+    if (role === 'supplier') {
+      const supplierUser = await prisma.supplierUser.upsert({
+        where: { phone: phone.trim() },
+        create: { phone: phone.trim() },
+        update: {},
+      });
+      // Retroactively link any Supplier rows a trader already entered under this phone number —
+      // traders typically add a supplier long before that supplier ever signs into the app.
+      await prisma.supplier.updateMany({
+        where: { phone: phone.trim(), supplierUserId: null },
+        data: { supplierUserId: supplierUser.id },
+      });
+      const token = issueSession({ id: supplierUser.id, role: 'supplier' });
+      return res.json({ data: supplierUser, token });
+    }
+
+    const trader = await prisma.trader.findUnique({ where: { phone: phone.trim() }, select: TRADER_SELECT });
+    if (!trader) return res.status(404).json({ error: 'No trader account found for this phone number' });
+    const token = issueSession({ id: trader.id, role: 'trader' });
+    return res.json({ data: trader, token });
+  } catch (err) {
+    console.error('OTP verify error:', err);
+    res.status(500).json({ error: 'Verification failed. Try again.' });
   }
 });
 

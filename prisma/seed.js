@@ -24,37 +24,92 @@ async function main() {
   ];
 
   for (const persona of personas) {
-    // Skip if already seeded
-    const existing = await prisma.trader.findFirst({ where: { name: persona.name } });
-    if (existing) {
-      console.log(`Skipping ${persona.name} — already seeded`);
-      continue;
+    let trader = await prisma.trader.findFirst({ where: { name: persona.name } });
+    const isNewTrader = !trader;
+
+    if (trader) {
+      console.log(`${persona.name} already seeded — checking suppliers/history separately`);
+    } else {
+      console.log(`Creating virtual accounts for ${persona.name}...`);
+
+      const [main, supplier, savings] = await Promise.all([
+        createVirtualAccount(`${persona.name} Main Till`, `${persona.name.toLowerCase()}-main`),
+        createVirtualAccount(`${persona.name} Supplier`, `${persona.name.toLowerCase()}-supplier`),
+        createVirtualAccount(`${persona.name} Savings`, `${persona.name.toLowerCase()}-savings`),
+      ]);
+
+      trader = await prisma.trader.create({
+        data: {
+          name: persona.name,
+          business: persona.business,
+          market: persona.market,
+          avatar: persona.avatar,
+          mainVirtualAccountId: main.accountId,
+          mainAccountNumber: main.accountNumber,
+          supplierAccountId: supplier.accountId,
+          supplierAccountNumber: supplier.accountNumber,
+          savingsAccountId: savings.accountId,
+          savingsAccountNumber: savings.accountNumber,
+        },
+      });
+
+      console.log(`Created trader: ${trader.name} (${trader.id})`);
     }
 
-    console.log(`Creating virtual accounts for ${persona.name}...`);
+    // Demo suppliers for Amaka — one Credit Repayment (the trust/dispute story), one Restock.
+    // Idempotent on its own, independent of whether the trader itself was just created.
+    const existingSuppliers = await prisma.supplier.findMany({ where: { traderId: trader.id } });
+    if (persona.name === 'Amaka' && existingSuppliers.length === 0) {
+      const mamaKemi = await prisma.supplier.create({
+        data: {
+          traderId: trader.id,
+          name: 'Mama Kemi Foods',
+          phone: '08011112222',
+          bankCode: '058',
+          bankName: 'GTBank',
+          accountNumber: '0012345678',
+          resolvedAccountName: 'Kemi Adebayo Foods Ltd',
+          accountNameVerified: true,
+          mode: 'credit_repayment',
+          allocationPct: 15,
+          payoutSchedule: 'immediate',
+        },
+      });
+      const ledger = await prisma.creditLedger.create({
+        data: {
+          supplierId: mamaKemi.id,
+          creditAmount: 8000000,
+          outstandingBalance: 8000000,
+          note: '₦80,000 of stock from Mama Kemi',
+          status: 'active',
+          confirmationStatus: 'pending',
+        },
+      });
+      await prisma.creditLedgerEvent.create({
+        data: { creditLedgerId: ledger.id, eventType: 'created', newAmount: 8000000, note: ledger.note, actor: 'trader' },
+      });
 
-    const [main, supplier, savings] = await Promise.all([
-      createVirtualAccount(`${persona.name} Main Till`, `${persona.name.toLowerCase()}-main`),
-      createVirtualAccount(`${persona.name} Supplier`, `${persona.name.toLowerCase()}-supplier`),
-      createVirtualAccount(`${persona.name} Savings`, `${persona.name.toLowerCase()}-savings`),
-    ]);
+      const adeTextiles = await createVirtualAccount('Ade Textiles Restock', `${trader.name.toLowerCase()}-supplier-ade`);
+      await prisma.supplier.create({
+        data: {
+          traderId: trader.id,
+          name: 'Ade Textiles',
+          phone: '08033334444',
+          bankCode: '044',
+          bankName: 'Access Bank',
+          accountNumber: '0099887766',
+          mode: 'restock',
+          allocationPct: 5,
+          payoutSchedule: 'weekly',
+          virtualAccountId: adeTextiles.accountId,
+          virtualAccountNumber: adeTextiles.accountNumber,
+        },
+      });
 
-    const trader = await prisma.trader.create({
-      data: {
-        name: persona.name,
-        business: persona.business,
-        market: persona.market,
-        avatar: persona.avatar,
-        mainVirtualAccountId: main.accountId,
-        mainAccountNumber: main.accountNumber,
-        supplierAccountId: supplier.accountId,
-        supplierAccountNumber: supplier.accountNumber,
-        savingsAccountId: savings.accountId,
-        savingsAccountNumber: savings.accountNumber,
-      },
-    });
+      console.log(`  Seeded 2 suppliers for ${persona.name}: Mama Kemi Foods (Credit Repayment, ₦80,000 owed) and Ade Textiles (Restock)`);
+    }
 
-    console.log(`Created trader: ${trader.name} (${trader.id})`);
+    if (!isNewTrader) continue; // transaction history was already seeded for this trader
 
     // Seed 7 days of transaction history
     const sampleAmounts = [

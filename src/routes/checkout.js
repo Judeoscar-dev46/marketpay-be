@@ -4,6 +4,9 @@ const nomba = require('../services/nomba');
 
 const router = express.Router();
 
+// Deliberately unauthenticated — this is the entry point for both the trader's own "Charge"
+// flow and the public /c/:traderId customer payment link. A customer paying a trader never
+// has (or needs) a MarketPay account, so this route can't require a session.
 router.post('/', async (req, res) => {
   const { traderId, amount } = req.body;
 

@@ -1,23 +1,19 @@
 const express = require('express');
-const { registerSseClient, removeSseClient } = require('../services/split');
+const {
+  registerSseClient, removeSseClient,
+  registerSupplierSseClient, removeSupplierSseClient,
+} = require('../services/split');
 
 const router = express.Router();
 
-router.get('/:traderId', (req, res) => {
-  const { traderId } = req.params;
-
+function openStream(res) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
   res.flushHeaders();
-
-  // Send a heartbeat immediately so the client knows connection is live
   res.write('data: {"type":"connected"}\n\n');
 
-  registerSseClient(traderId, res);
-
-  // Keep-alive ping every 25s
   const ping = setInterval(() => {
     try {
       res.write(': ping\n\n');
@@ -26,6 +22,23 @@ router.get('/:traderId', (req, res) => {
     }
   }, 25000);
 
+  return ping;
+}
+
+router.get('/supplier/:supplierUserId', (req, res) => {
+  const { supplierUserId } = req.params;
+  const ping = openStream(res);
+  registerSupplierSseClient(supplierUserId, res);
+  req.on('close', () => {
+    clearInterval(ping);
+    removeSupplierSseClient(supplierUserId, res);
+  });
+});
+
+router.get('/:traderId', (req, res) => {
+  const { traderId } = req.params;
+  const ping = openStream(res);
+  registerSseClient(traderId, res);
   req.on('close', () => {
     clearInterval(ping);
     removeSseClient(traderId, res);

@@ -16,6 +16,9 @@ const simulateRouter = require('./routes/simulate');
 const sseRouter = require('./routes/sse');
 const ledgerRouter = require('./routes/ledger');
 const publicRouter = require('./routes/public');
+const suppliersRouter = require('./routes/suppliers');
+const creditRouter = require('./routes/credit');
+const supplierDashboardRouter = require('./routes/supplier-dashboard');
 
 const app = express();
 
@@ -43,6 +46,9 @@ app.use('/api/sse', sseRouter);
 app.use('/api/ledger', ledgerRouter);
 app.use('/api/transactions', transactionsRouter);
 app.use('/api/public', publicRouter);
+app.use('/api/suppliers', suppliersRouter);
+app.use('/api/credit', creditRouter);
+app.use('/api/supplier-dashboard', supplierDashboardRouter);
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`MarketPay backend listening on port ${PORT}`));

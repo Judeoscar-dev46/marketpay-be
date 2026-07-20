@@ -23,9 +23,105 @@ model Trader {
   tillPct              Int           @default(70)
   supplierPct          Int           @default(20)
   savingsPct           Int           @default(10)
+  savingsAccumulatedPending      Int @default(0)
+  platformFeeAccumulatedPending  Int @default(0)
   transactions         Transaction[]
   dailyLedger          DailyLedger[]
+  suppliers            Supplier[]
   createdAt            DateTime      @default(now())
+}
+
+model Supplier {
+  id                   String    @id @default(cuid())
+  traderId             String
+  trader               Trader    @relation(fields: [traderId], references: [id])
+  name                 String
+  phone                String
+  bankCode             String
+  bankName             String?
+  accountNumber        String
+  resolvedAccountName  String?
+  accountNameVerified  Boolean   @default(false)
+  mode                 String    @default("restock") // restock | credit_repayment
+  allocationPct        Int
+  payoutSchedule       String    @default("immediate") // immediate | daily | weekly
+  restockFallbackPct   Int?
+  relationshipStatus   String    @default("pending") // pending | accepted | disputed
+  virtualAccountId     String?
+  virtualAccountNumber String?
+  accumulatedPending   Int       @default(0)
+  archivedAt           DateTime?
+  supplierUserId       String?
+  supplierUser         SupplierUser?   @relation(fields: [supplierUserId], references: [id])
+  creditLedger         CreditLedger?
+  splitTransfers       SplitTransfer[]
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([phone])
+  @@index([traderId])
+}
+
+model SupplierUser {
+  id        String     @id @default(cuid())
+  phone     String     @unique
+  name      String?
+  suppliers Supplier[]
+  createdAt DateTime   @default(now())
+}
+
+model CreditLedger {
+  id                 String    @id @default(cuid())
+  supplierId         String    @unique
+  supplier           Supplier  @relation(fields: [supplierId], references: [id])
+  creditAmount       Int
+  totalRepaid        Int       @default(0)
+  outstandingBalance Int
+  overpaidAmount     Int       @default(0)
+  note               String?
+  status             String    @default("active") // active | disputed | cleared | overpaid
+  confirmationStatus String    @default("pending") // pending | confirmed | disputed
+  createdAt          DateTime  @default(now())
+  clearedAt          DateTime?
+  repayments         CreditRepayment[]
+  events             CreditLedgerEvent[]
+}
+
+model CreditRepayment {
+  id              String         @id @default(cuid())
+  creditLedgerId  String
+  creditLedger    CreditLedger   @relation(fields: [creditLedgerId], references: [id])
+  splitTransferId String?
+  splitTransfer   SplitTransfer? @relation(fields: [splitTransferId], references: [id])
+  amount          Int
+  runningBalance  Int
+  note            String?
+  createdAt       DateTime @default(now())
+}
+
+model CreditLedgerEvent {
+  id             String       @id @default(cuid())
+  creditLedgerId String
+  creditLedger   CreditLedger @relation(fields: [creditLedgerId], references: [id])
+  eventType      String       // created | confirmed | disputed | corrected | repayment | cleared | overpaid
+  previousAmount Int?
+  newAmount      Int?
+  note           String?
+  actor          String       // trader | supplier | system
+  createdAt      DateTime     @default(now())
+}
+
+model OtpCode {
+  id         String    @id @default(cuid())
+  phone      String
+  codeHash   String
+  purpose    String    // trader_login | supplier_login
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  @@index([phone, purpose])
 }
 
 model Transaction {
@@ -49,11 +145,14 @@ model SplitTransfer {
   id            String      @id @default(cuid())
   transactionId String
   transaction   Transaction @relation(fields: [transactionId], references: [id])
-  type          String
+  type          String      // supplier | savings | platform_fee
+  supplierId    String?
+  supplier      Supplier?   @relation(fields: [supplierId], references: [id])
   amount        Int
   transferRef   String?
   status        String      @default("pending")
   createdAt     DateTime    @default(now())
+  creditRepayments CreditRepayment[]
 }
 
 model DailyLedger {
