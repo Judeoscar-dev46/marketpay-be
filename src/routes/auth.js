@@ -4,6 +4,7 @@ const prisma = require('../lib/prisma');
 const nomba = require('../services/nomba');
 const otp = require('../services/otp');
 const { issueSession } = require('../middleware/auth');
+const supplierInvites = require('../services/supplierInvites');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
 
@@ -29,7 +30,7 @@ const TRADER_SELECT = {
 
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
-  const { name, business, market, phone, avatar, pin } = req.body;
+  const { name, business, market, phone, avatar, pin, inviteCode } = req.body;
 
   if (!name?.trim() || !business?.trim() || !market?.trim()) {
     return res.status(400).json({ error: 'name, business, and market are required' });
@@ -92,7 +93,19 @@ router.post('/register', async (req, res) => {
     });
 
     const token = issueSession({ id: trader.id, role: 'trader' });
-    res.status(201).json({ data: trader, token });
+
+    let inviteRedemption;
+    if (inviteCode?.trim()) {
+      try {
+        await supplierInvites.redeemInvite({ traderId: trader.id, rawCode: inviteCode });
+        inviteRedemption = { status: 'redeemed' };
+      } catch (err) {
+        console.warn('Register-time invite redemption skipped:', err.message);
+        inviteRedemption = { status: 'invalid' };
+      }
+    }
+
+    res.status(201).json({ data: trader, token, inviteRedemption });
   } catch (err) {
     console.error('Registration error:', err?.response?.data || err.message || err);
     res.status(500).json({ error: 'Registration failed. Try again.' });

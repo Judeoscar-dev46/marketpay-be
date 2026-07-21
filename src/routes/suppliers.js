@@ -2,15 +2,12 @@ const express = require('express');
 const prisma = require('../lib/prisma');
 const nomba = require('../services/nomba');
 const { requireAuth, requireTrader, requireSupplier } = require('../middleware/auth');
+const { activeSupplierWhere, assertAllocationFits } = require('../services/supplierAllocation');
+const supplierInvites = require('../services/supplierInvites');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
-const MAX_SUPPLIERS = 3;
 
 const router = express.Router();
-
-function activeSupplierWhere(traderId) {
-  return { traderId, archivedAt: null };
-}
 
 async function makeSubAccount({ traderName, supplierName, ref }) {
   if (USE_STUB) {
@@ -23,7 +20,8 @@ async function makeSubAccount({ traderName, supplierName, ref }) {
 }
 
 // POST /api/suppliers/resolve-name — preview the real bank account name before saving a supplier
-router.post('/resolve-name', requireAuth, requireTrader, async (req, res) => {
+// or a supplier's own invite profile — a stateless Nomba lookup, no role-specific logic.
+router.post('/resolve-name', requireAuth, async (req, res) => {
   const { accountNumber, bankCode } = req.body;
   if (!accountNumber?.trim() || !bankCode) {
     return res.status(400).json({ error: 'accountNumber and bankCode are required' });
@@ -34,6 +32,41 @@ router.post('/resolve-name', requireAuth, requireTrader, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to resolve account name' });
+  }
+});
+
+// GET /api/suppliers/invites/:code — read-only preview of a supplier's invite code, creates
+// nothing. Deliberately unauthenticated: a brand-new trader typing a code during registration
+// has no session yet.
+router.get('/invites/:code', async (req, res) => {
+  try {
+    const preview = await supplierInvites.previewInvite(req.params.code);
+    if (!preview) return res.status(404).json({ error: 'Invite code not found' });
+    res.json({ data: preview });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to look up invite code' });
+  }
+});
+
+// POST /api/suppliers/redeem-invite — an already-logged-in trader redeeming a supplier's code
+router.post('/redeem-invite', requireAuth, requireTrader, async (req, res) => {
+  const { code, allocationPct, mode, payoutSchedule } = req.body;
+  try {
+    const { supplier } = await supplierInvites.redeemInvite({
+      traderId: req.auth.id,
+      rawCode: code,
+      allocationPct,
+      mode,
+      payoutSchedule,
+    });
+    res.status(201).json({ data: supplier });
+  } catch (err) {
+    if (err instanceof supplierInvites.RedemptionError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    console.error(err);
+    res.status(500).json({ error: 'Failed to redeem invite code' });
   }
 });
 
@@ -76,16 +109,7 @@ router.post('/', requireAuth, requireTrader, async (req, res) => {
     const trader = await prisma.trader.findUnique({ where: { id: traderId } });
     if (!trader) return res.status(404).json({ error: 'Trader not found' });
 
-    const existing = await prisma.supplier.findMany({ where: activeSupplierWhere(traderId) });
-    if (existing.length >= MAX_SUPPLIERS) {
-      return res.status(400).json({ error: `Maximum of ${MAX_SUPPLIERS} suppliers reached` });
-    }
-    const allocatedSoFar = existing.reduce((sum, s) => sum + s.allocationPct, 0);
-    if (allocatedSoFar + allocationPct > trader.supplierPct) {
-      return res.status(400).json({
-        error: `Allocation exceeds available supplier split — ${trader.supplierPct - allocatedSoFar}% remaining. Adjust Split Settings first if you need more.`,
-      });
-    }
+    await assertAllocationFits({ traderId, allocationPct, trader });
 
     let virtualAccountId = null;
     let virtualAccountNumber = null;
@@ -123,6 +147,7 @@ router.post('/', requireAuth, requireTrader, async (req, res) => {
 
     res.status(201).json({ data: supplier });
   } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
     console.error(err);
     res.status(500).json({ error: 'Failed to add supplier' });
   }
@@ -144,15 +169,7 @@ router.patch('/:id', requireAuth, requireTrader, async (req, res) => {
       if (!Number.isInteger(allocationPct) || allocationPct < 1 || allocationPct > 99) {
         return res.status(400).json({ error: 'allocationPct must be an integer between 1 and 99' });
       }
-      const others = await prisma.supplier.findMany({
-        where: { ...activeSupplierWhere(req.auth.id), id: { not: id } },
-      });
-      const allocatedByOthers = others.reduce((sum, s) => sum + s.allocationPct, 0);
-      if (allocatedByOthers + allocationPct > trader.supplierPct) {
-        return res.status(400).json({
-          error: `Allocation exceeds available supplier split — ${trader.supplierPct - allocatedByOthers}% remaining`,
-        });
-      }
+      await assertAllocationFits({ traderId: req.auth.id, allocationPct, excludeSupplierId: id, trader });
       data.allocationPct = allocationPct;
     }
 
@@ -182,6 +199,7 @@ router.patch('/:id', requireAuth, requireTrader, async (req, res) => {
     const updated = await prisma.supplier.update({ where: { id }, data });
     res.json({ data: updated });
   } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
     console.error(err);
     res.status(500).json({ error: 'Failed to update supplier' });
   }

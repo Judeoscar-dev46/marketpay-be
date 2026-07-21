@@ -47,6 +47,7 @@ model Supplier {
   payoutSchedule       String    @default("immediate") // immediate | daily | weekly
   restockFallbackPct   Int?
   relationshipStatus   String    @default("pending") // pending | accepted | disputed
+  onboardedVia         String    @default("trader_added") // trader_added | code_redeemed
   virtualAccountId     String?
   virtualAccountNumber String?
   accumulatedPending   Int       @default(0)
@@ -63,11 +64,21 @@ model Supplier {
 }
 
 model SupplierUser {
-  id        String     @id @default(cuid())
-  phone     String     @unique
-  name      String?
-  suppliers Supplier[]
-  createdAt DateTime   @default(now())
+  id                     String     @id @default(cuid())
+  phone                  String     @unique
+  name                   String?
+  businessName           String?
+  bankCode               String?
+  bankName               String?
+  accountNumber          String?
+  resolvedAccountName    String?
+  accountNameVerified    Boolean    @default(false)
+  suggestedMode          String?    // restock | credit_repayment
+  suggestedAllocationPct Int?
+  inviteCode             String?    @unique
+  inviteCodeCreatedAt    DateTime?
+  suppliers              Supplier[]
+  createdAt              DateTime   @default(now())
 }
 
 model CreditLedger {
