@@ -2,6 +2,7 @@ const express = require('express');
 const prisma = require('../lib/prisma');
 const nomba = require('../services/nomba');
 const { processPayment } = require('../services/split');
+const collateral = require('../services/collateral');
 
 const router = express.Router();
 
@@ -67,6 +68,31 @@ router.post('/nomba', express.raw({ type: 'application/json' }), async (req, res
     if (nombaRef) {
       const exists = await prisma.transaction.findUnique({ where: { webhookRef: nombaRef } });
       if (exists) return res.json({ status: 'already_processed' });
+    }
+
+    // Direct virtual-account credit — a different event shape from the checkout-completion
+    // flow above (there's no pre-existing Transaction row to match against). Used for cash
+    // collateral deposits into a trader's collateral virtual account.
+    // NOTE: the exact Nomba field names for this event type (event_type/type, and which field
+    // carries the credited account id) are unconfirmed against real Nomba docs/sandbox — this
+    // is a best-effort branch flagged for verification, not a tested integration.
+    const eventType = event?.event_type || event?.type;
+    const creditedAccountId = event?.data?.virtualAccountId || event?.data?.accountId || event?.data?.destinationAccountId;
+    const creditedAmountKobo = Math.round((event?.data?.amount || 0) * 100) || event?.data?.amountKobo;
+
+    if (eventType && /credit|deposit/i.test(eventType) && creditedAccountId) {
+      const trader = await prisma.trader.findFirst({ where: { collateralAccountId: creditedAccountId } });
+      if (trader && creditedAmountKobo > 0) {
+        const dedupRef = nombaRef || `${creditedAccountId}-${creditedAmountKobo}-${event?.data?.createdAt || Date.now()}`;
+        const already = await prisma.collateralEvent.findFirst({ where: { note: dedupRef, eventType: 'deposit' } });
+        if (already) return res.json({ status: 'already_processed' });
+
+        res.json({ status: 'ok' });
+        collateral.recordCashReceived({ traderId: trader.id, amount: creditedAmountKobo, webhookRef: dedupRef }).catch((err) =>
+          console.error('recordCashReceived failed for trader', trader.id, err)
+        );
+        return;
+      }
     }
 
     // Find pending transaction by checkoutRef (our transaction id)

@@ -41,15 +41,17 @@ function authHeaders(token) {
   };
 }
 
-async function createVirtualAccount({ name, reference }) {
+async function createVirtualAccount({ name, reference, bvn }) {
   const token = await getAccessToken();
   const safeReference = reference.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 50);
+  const body = {
+    accountName: name,
+    accountRef: safeReference,
+  };
+  if (bvn) body.bvn = bvn;
   const res = await axios.post(
     `${BASE_URL}/accounts/virtual`,
-    {
-      accountName: name,
-      accountRef: safeReference,
-    },
+    body,
     { headers: authHeaders(token) }
   );
   if (res.data.code !== '00') {
@@ -167,23 +169,58 @@ function verifyWebhookSignature(rawBody, signatureHeader) {
 // they're adding the right supplier before the record (and future money) is saved.
 async function resolveAccountName({ accountNumber, bankCode }) {
   if (isStub()) {
-    return { accountName: 'Verified Test Supplier Ltd', verified: false };
+    return { accountName: 'Verified Test Supplier Ltd', verified: true };
   }
   try {
     const token = await getAccessToken();
     const res = await axios.post(
-      `${BASE_URL}/accounts/resolve`,
+      `${BASE_URL}/transfers/bank/lookup`,
       { accountNumber, bankCode },
       { headers: authHeaders(token) }
     );
-    if (res.data.code !== '00') throw new Error(res.data.description || 'resolve failed');
+    if (res.data.code !== '00') throw new Error(res.data.description || 'lookup failed');
     return { accountName: res.data.data?.accountName, verified: true };
   } catch (err) {
-    // Degrade gracefully — Nomba may not expose this endpoint. The trader-entered name
-    // is used instead, just flagged as unverified rather than blocking supplier creation.
+    // Degrade gracefully — the trader-entered name is used instead, just flagged as
+    // unverified rather than blocking supplier creation.
     console.warn('Nomba resolveAccountName unavailable, falling back to unverified:', err.message);
     return { accountName: null, verified: false };
   }
+}
+
+const STUB_BANKS = [
+  { code: '058', name: 'GTBank' },
+  { code: '044', name: 'Access Bank' },
+  { code: '011', name: 'First Bank' },
+  { code: '057', name: 'Zenith Bank' },
+  { code: '033', name: 'UBA' },
+  { code: '070', name: 'Fidelity Bank' },
+  { code: '221', name: 'Stanbic IBTC' },
+  { code: '032', name: 'Union Bank' },
+];
+
+let _banksCache = null;
+let _banksCacheAt = 0;
+const BANKS_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h — Nomba's own docs say bank codes rarely change
+
+// Fetches the full list of banks (commercial + microfinance) for bank-picker UIs.
+async function getBanks() {
+  if (isStub()) return STUB_BANKS;
+  if (_banksCache && Date.now() - _banksCacheAt < BANKS_CACHE_TTL) return _banksCache;
+
+  const token = await getAccessToken();
+  const res = await axios.get(`${BASE_URL}/transfers/banks`, { headers: authHeaders(token) });
+  if (res.data.code !== '00') {
+    throw new Error(`Nomba getBanks failed: ${res.data.code} — ${res.data.description}`);
+  }
+  const raw = res.data.data?.results || res.data.data || [];
+  // Normalize Nomba bank objects so BankPicker always gets { code, name }.
+  _banksCache = (Array.isArray(raw) ? raw : []).map((b) => ({
+    code: String(b.code || b.bankCode || ''),
+    name: b.name || b.bankName || String(b.code || b.bankCode || ''),
+  })).filter((b) => b.code);
+  _banksCacheAt = Date.now();
+  return _banksCache;
 }
 
 module.exports = {
@@ -193,4 +230,5 @@ module.exports = {
   payToBank,
   verifyWebhookSignature,
   resolveAccountName,
+  getBanks,
 };

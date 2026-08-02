@@ -1,5 +1,6 @@
 const prisma = require('../lib/prisma');
 const nomba = require('./nomba');
+const collateral = require('./collateral');
 
 const MIN_TRANSFER = 10000; // ₦100 in kobo — Nomba's minimum transfer amount
 const PLATFORM_FEE_PCT = Number(process.env.PLATFORM_FEE_PCT || 4);
@@ -100,8 +101,12 @@ async function processPayment(transactionId) {
     const share = Math.floor(total * (supplier.allocationPct / 100));
 
     const ledger = supplier.creditLedger;
-    if (supplier.mode === 'credit_repayment' && ledger && (ledger.status === 'disputed' || ledger.status === 'cleared' || ledger.status === 'overpaid')) {
-      // Frozen (disputed) or nothing left to repay — this sale's share folds back into till.
+    if (supplier.mode === 'credit_repayment' && ledger && (
+      ledger.status === 'disputed' || ledger.status === 'cleared' || ledger.status === 'overpaid'
+      || ledger.confirmationStatus !== 'confirmed'
+      || !ledger.goodsReleased
+    )) {
+      // Frozen/resolved, not yet confirmed, or goods not yet released — this sale's share folds back into till.
       continue;
     }
 
@@ -136,7 +141,13 @@ async function processPayment(transactionId) {
     }
 
     splitRows.push({ type: 'supplier', supplierId: supplier.id, amount: floor.transferNow, transferRef: result.transferRef, status: result.status });
-    supplierUpdates.push({ id: supplier.id, data: { accumulatedPending: floor.newPending } });
+    const updateData = { accumulatedPending: floor.newPending };
+    // Non-immediate schedules land in the supplier's own held sub-account rather than their
+    // bank directly — track the running balance so there's something to pay out later.
+    if (supplier.payoutSchedule !== 'immediate' && result.status === 'success') {
+      updateData.heldBalance = { increment: floor.transferNow };
+    }
+    supplierUpdates.push({ id: supplier.id, data: updateData });
 
     if (supplier.mode === 'credit_repayment' && ledger && result.status === 'success') {
       const newRepaid = ledger.totalRepaid + floor.transferNow;
@@ -293,6 +304,13 @@ async function processPayment(transactionId) {
     const supplier = trader.suppliers.find((s) => s.id === event.supplierId);
     if (supplier?.supplierUserId) {
       emitToSupplierUser(supplier.supplierUserId, { type: 'credit_repayment', supplierId: supplier.id });
+    }
+    if (event.cleared) {
+      // Best-effort, outside the DB transaction above — mirrors how the restock-fallback
+      // mode switch is also treated as a non-critical side effect of clearing.
+      collateral.autoReleaseOnClear(event.ledgerId).catch((err) => {
+        console.error('autoReleaseOnClear failed for ledger', event.ledgerId, err);
+      });
     }
   }
 }

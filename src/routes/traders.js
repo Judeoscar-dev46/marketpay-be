@@ -56,10 +56,11 @@ router.post('/', async (req, res) => {
   }
 
   try {
-    const [main, supplier, savings] = await Promise.all([
+    const [main, supplier, savings, collateral] = await Promise.all([
       makeAccount('Main Till'),
       makeAccount('Supplier'),
       makeAccount('Savings'),
+      makeAccount('Collateral'),
     ]);
 
     const trader = await prisma.trader.create({
@@ -75,6 +76,8 @@ router.post('/', async (req, res) => {
         supplierAccountNumber: supplier.accountNumber,
         savingsAccountId: savings.accountId,
         savingsAccountNumber: savings.accountNumber,
+        collateralAccountId: collateral.accountId,
+        collateralAccountNumber: collateral.accountNumber,
       },
     });
 
@@ -129,6 +132,39 @@ router.post('/:traderId/pay-supplier', requireOwnTrader, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Payout failed. Check account details and try again.' });
+  }
+});
+
+// POST /api/traders/:traderId/withdraw — { source: 'main' | 'savings', amount } to the trader's own bank account
+router.post('/:traderId/withdraw', requireOwnTrader, async (req, res) => {
+  const { traderId } = req.params;
+  const { source, amount } = req.body;
+  if (!['main', 'savings'].includes(source) || !amount || amount <= 0) {
+    return res.status(400).json({ error: 'source (main|savings) and amount are required' });
+  }
+
+  try {
+    const trader = await prisma.trader.findUnique({ where: { id: traderId } });
+    if (!trader) return res.status(404).json({ error: 'Trader not found' });
+    if (trader.kycStatus !== 'submitted' || !trader.accountNumber || !trader.bankCode) {
+      return res.status(403).json({ error: 'Complete KYC and add your bank account before withdrawing' });
+    }
+
+    const fromAccountId = source === 'savings' ? trader.savingsAccountId : trader.mainVirtualAccountId;
+    const ref = `withdraw-${traderId}-${Date.now()}`;
+    const result = await nomba.payToBank({
+      fromAccountId,
+      accountNumber: trader.accountNumber,
+      bankCode: trader.bankCode,
+      amount,
+      reference: ref,
+      narration: `MarketPay withdrawal — ${trader.name}`,
+    });
+
+    res.json({ data: { transferRef: result.transferRef, amount, source } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Withdrawal failed. Check your bank details and try again.' });
   }
 });
 

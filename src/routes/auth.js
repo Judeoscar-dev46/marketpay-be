@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 const prisma = require('../lib/prisma');
 const nomba = require('../services/nomba');
 const otp = require('../services/otp');
-const { issueSession } = require('../middleware/auth');
+const { issueSession, requireAuth, requireTrader } = require('../middleware/auth');
 const supplierInvites = require('../services/supplierInvites');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
@@ -26,6 +26,12 @@ const TRADER_SELECT = {
   tillPct: true,
   supplierPct: true,
   savingsPct: true,
+  kycStatus: true,
+  bankCode: true,
+  bankName: true,
+  accountNumber: true,
+  resolvedAccountName: true,
+  accountNameVerified: true,
 };
 
 // POST /api/auth/register
@@ -66,10 +72,11 @@ router.post('/register', async (req, res) => {
   }
 
   try {
-    const [main, supplier, savings] = await Promise.all([
+    const [main, supplier, savings, collateral] = await Promise.all([
       makeAccount('Main Till'),
       makeAccount('Supplier'),
       makeAccount('Savings'),
+      makeAccount('Collateral'),
     ]);
 
     const pinHash = bcrypt.hashSync(pin, 10);
@@ -88,6 +95,8 @@ router.post('/register', async (req, res) => {
         supplierAccountNumber: supplier.accountNumber,
         savingsAccountId: savings.accountId,
         savingsAccountNumber: savings.accountNumber,
+        collateralAccountId: collateral.accountId,
+        collateralAccountNumber: collateral.accountNumber,
       },
       select: TRADER_SELECT,
     });
@@ -109,6 +118,40 @@ router.post('/register', async (req, res) => {
   } catch (err) {
     console.error('Registration error:', err?.response?.data || err.message || err);
     res.status(500).json({ error: 'Registration failed. Try again.' });
+  }
+});
+
+// POST /api/auth/kyc — { bvn, bankCode, bankName, accountNumber, resolvedAccountName, accountNameVerified }
+// Submits the trader's own BVN + payout bank account, completing KYC. Separate from /register
+// so registration stays fast — this is a follow-up step, not a blocking requirement to sign up.
+router.post('/kyc', requireAuth, requireTrader, async (req, res) => {
+  const { bvn, bankCode, bankName, accountNumber, resolvedAccountName, accountNameVerified } = req.body;
+
+  if (!bvn || !/^\d{11}$/.test(bvn)) {
+    return res.status(400).json({ error: 'BVN must be exactly 11 digits' });
+  }
+  if (!bankCode || !accountNumber?.trim()) {
+    return res.status(400).json({ error: 'bankCode and accountNumber are required' });
+  }
+
+  try {
+    const trader = await prisma.trader.update({
+      where: { id: req.auth.id },
+      data: {
+        bvn,
+        kycStatus: 'submitted',
+        bankCode,
+        bankName: bankName || null,
+        accountNumber: accountNumber.trim(),
+        resolvedAccountName: resolvedAccountName || null,
+        accountNameVerified: !!accountNameVerified,
+      },
+      select: TRADER_SELECT,
+    });
+    res.json({ data: trader });
+  } catch (err) {
+    console.error('KYC submission error:', err.message || err);
+    res.status(500).json({ error: 'Failed to submit KYC. Try again.' });
   }
 });
 

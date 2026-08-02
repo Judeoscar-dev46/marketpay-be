@@ -18,13 +18,15 @@ const ledgerRouter = require('./routes/ledger');
 const publicRouter = require('./routes/public');
 const suppliersRouter = require('./routes/suppliers');
 const creditRouter = require('./routes/credit');
+const creditAgreementRouter = require('./routes/credit-agreement');
+const collateralRouter = require('./routes/collateral');
 const supplierDashboardRouter = require('./routes/supplier-dashboard');
 
 const app = express();
 
 const allowedOrigins = process.env.FRONTEND_URL
   ? process.env.FRONTEND_URL.split(',').map((o) => o.trim())
-  : true; // allow all in dev when FRONTEND_URL is not set
+  : true;
 
 app.use(cors({
   origin: allowedOrigins,
@@ -48,6 +50,8 @@ app.use('/api/transactions', transactionsRouter);
 app.use('/api/public', publicRouter);
 app.use('/api/suppliers', suppliersRouter);
 app.use('/api/credit', creditRouter);
+app.use('/api/credit-agreement', creditAgreementRouter);
+app.use('/api/collateral', collateralRouter);
 app.use('/api/supplier-dashboard', supplierDashboardRouter);
 
 const PORT = process.env.PORT || 3001;

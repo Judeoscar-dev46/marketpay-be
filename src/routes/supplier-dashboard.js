@@ -1,5 +1,6 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
+const nomba = require('../services/nomba');
 const { requireAuth, requireSupplier } = require('../middleware/auth');
 const { ensureInviteCode } = require('../services/supplierInvites');
 
@@ -16,6 +17,22 @@ router.get('/profile', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+// POST /api/supplier-dashboard/resolve-name — same Nomba bank lookup used by trader KYC
+// (nomba.resolveAccountName → POST /v1/transfers/bank/lookup)
+router.post('/resolve-name', async (req, res) => {
+  const { accountNumber, bankCode } = req.body;
+  if (!accountNumber?.trim() || !bankCode) {
+    return res.status(400).json({ error: 'accountNumber and bankCode are required' });
+  }
+  try {
+    const result = await nomba.resolveAccountName({ accountNumber: accountNumber.trim(), bankCode });
+    res.json({ data: result });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to resolve account name' });
   }
 });
 
@@ -49,6 +66,18 @@ router.patch('/profile', async (req, res) => {
   }
 
   try {
+    // Re-verify via the same Nomba lookup KYC uses whenever bank details are being saved.
+    const nextBankCode = data.bankCode !== undefined ? data.bankCode : undefined;
+    const nextAccountNumber = data.accountNumber !== undefined ? data.accountNumber : undefined;
+    if (nextBankCode && nextAccountNumber) {
+      const lookup = await nomba.resolveAccountName({
+        accountNumber: nextAccountNumber,
+        bankCode: nextBankCode,
+      });
+      if (lookup.accountName) data.resolvedAccountName = lookup.accountName;
+      data.accountNameVerified = !!lookup.verified;
+    }
+
     let supplierUser = await prisma.supplierUser.update({ where: { id: req.auth.id }, data });
 
     if (supplierUser.businessName && supplierUser.bankCode && supplierUser.accountNumber) {
@@ -77,6 +106,20 @@ router.get('/relationships', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch relationships' });
+  }
+});
+
+// GET /api/supplier-dashboard/wallet-balance — total credit repaid across all relationships
+router.get('/wallet-balance', async (req, res) => {
+  try {
+    const result = await prisma.creditLedger.aggregate({
+      where: { supplier: { supplierUserId: req.auth.id, archivedAt: null } },
+      _sum: { totalRepaid: true },
+    });
+    res.json({ data: { balance: result._sum.totalRepaid || 0 } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch wallet balance' });
   }
 });
 

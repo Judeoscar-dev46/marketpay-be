@@ -19,6 +19,17 @@ async function makeSubAccount({ traderName, supplierName, ref }) {
   return nomba.createVirtualAccount({ name: `${traderName} — ${supplierName}`, reference: ref });
 }
 
+// GET /api/suppliers/banks — bank list for bank-picker UIs (cached in nomba.js)
+router.get('/banks', requireAuth, async (req, res) => {
+  try {
+    const banks = await nomba.getBanks();
+    res.json({ data: banks });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch bank list' });
+  }
+});
+
 // POST /api/suppliers/resolve-name — preview the real bank account name before saving a supplier
 // or a supplier's own invite profile — a stateless Nomba lookup, no role-specific logic.
 router.post('/resolve-name', requireAuth, async (req, res) => {
@@ -216,6 +227,42 @@ router.delete('/:id', requireAuth, requireTrader, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to remove supplier' });
+  }
+});
+
+// POST /api/suppliers/:id/payout — manually sweep a supplier's held sub-account balance to their bank.
+// Only relevant for daily/weekly suppliers (immediate ones are paid straight to their bank on every sale).
+router.post('/:id/payout', requireAuth, requireTrader, async (req, res) => {
+  const { id } = req.params;
+  const { amount } = req.body;
+  try {
+    const supplier = await prisma.supplier.findUnique({ where: { id } });
+    if (!supplier || supplier.traderId !== req.auth.id) return res.status(404).json({ error: 'Supplier not found' });
+    if (!supplier.virtualAccountId) {
+      return res.status(400).json({ error: 'This supplier has no held balance (immediate payout schedule)' });
+    }
+    const payAmount = amount && amount > 0 ? amount : supplier.heldBalance;
+    if (payAmount <= 0) return res.status(400).json({ error: 'Nothing to pay out' });
+
+    const ref = `supplier-payout-${id}-${Date.now()}`;
+    const result = await nomba.payToBank({
+      fromAccountId: supplier.virtualAccountId,
+      accountNumber: supplier.accountNumber,
+      bankCode: supplier.bankCode,
+      amount: payAmount,
+      reference: ref,
+      narration: `MarketPay supplier payout — ${supplier.name}`,
+    });
+
+    const updated = await prisma.supplier.update({
+      where: { id },
+      data: { heldBalance: { decrement: Math.min(payAmount, supplier.heldBalance) } },
+    });
+
+    res.json({ data: { transferRef: result.transferRef, amount: payAmount, heldBalance: updated.heldBalance } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Payout failed. Try again.' });
   }
 });
 

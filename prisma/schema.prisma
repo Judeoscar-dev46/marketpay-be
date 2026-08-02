@@ -20,11 +20,21 @@ model Trader {
   supplierAccountNumber String
   savingsAccountId     String
   savingsAccountNumber String
+  collateralAccountId     String?
+  collateralAccountNumber String?
+  collateralHeldPending   Int @default(0)
   tillPct              Int           @default(70)
   supplierPct          Int           @default(20)
   savingsPct           Int           @default(10)
   savingsAccumulatedPending      Int @default(0)
   platformFeeAccumulatedPending  Int @default(0)
+  bvn                  String?
+  kycStatus            String        @default("pending") // pending | submitted
+  bankCode             String?
+  bankName             String?
+  accountNumber        String?
+  resolvedAccountName  String?
+  accountNameVerified  Boolean       @default(false)
   transactions         Transaction[]
   dailyLedger          DailyLedger[]
   suppliers            Supplier[]
@@ -51,10 +61,12 @@ model Supplier {
   virtualAccountId     String?
   virtualAccountNumber String?
   accumulatedPending   Int       @default(0)
+  heldBalance          Int       @default(0)
   archivedAt           DateTime?
   supplierUserId       String?
   supplierUser         SupplierUser?   @relation(fields: [supplierUserId], references: [id])
   creditLedger         CreditLedger?
+  collateralProfile    CollateralProfile?
   splitTransfers       SplitTransfer[]
   createdAt            DateTime  @default(now())
   updatedAt            DateTime  @updatedAt
@@ -90,12 +102,40 @@ model CreditLedger {
   outstandingBalance Int
   overpaidAmount     Int       @default(0)
   note               String?
+  terms              String?
+  dueDate            DateTime?
+  goodsReleased      Boolean   @default(false)
+  goodsReleasedAt    DateTime?
   status             String    @default("active") // active | disputed | cleared | overpaid
   confirmationStatus String    @default("pending") // pending | confirmed | disputed
+  collateralProfileId String?  // trace-only — not enforced at creation
   createdAt          DateTime  @default(now())
   clearedAt          DateTime?
   repayments         CreditRepayment[]
   events             CreditLedgerEvent[]
+  agreementSnapshots CreditAgreementSnapshot[]
+}
+
+model CreditAgreementSnapshot {
+  id                    String   @id @default(cuid())
+  creditLedgerId        String
+  creditLedger          CreditLedger @relation(fields: [creditLedgerId], references: [id])
+  supplierId            String
+  traderId              String
+  creditAmount          Int
+  outstandingBalance    Int
+  terms                 String?
+  note                  String?
+  traderName            String
+  traderBusiness        String
+  supplierName          String
+  supplierBankName      String?
+  supplierAccountNumber String?
+  agreedAt              DateTime @default(now())
+  shareToken            String   @unique
+  createdAt             DateTime @default(now())
+
+  @@index([creditLedgerId])
 }
 
 model CreditRepayment {
@@ -114,12 +154,45 @@ model CreditLedgerEvent {
   id             String       @id @default(cuid())
   creditLedgerId String
   creditLedger   CreditLedger @relation(fields: [creditLedgerId], references: [id])
-  eventType      String       // created | confirmed | disputed | corrected | repayment | cleared | overpaid
+  eventType      String       // created | confirmed | disputed | corrected | repayment | cleared | overpaid | goods_released
   previousAmount Int?
   newAmount      Int?
   note           String?
   actor          String       // trader | supplier | system
   createdAt      DateTime     @default(now())
+}
+
+model CollateralProfile {
+  id               String    @id @default(cuid())
+  supplierId       String    @unique
+  supplier         Supplier  @relation(fields: [supplierId], references: [id])
+  traderId         String
+  requestedAmount  Int       // kobo — goods value the trader is asking credit for
+  heldAmount       Int       @default(0) // kobo, confirmed cash received via webhook
+  commitmentScore  Float     @default(0)
+  suggestedCeiling Int       @default(0)
+  eligible         Boolean   @default(false) // false until ratio >= 10%
+  status           String    @default("pending") // pending | active | released | forfeited
+  reviewStatus     String    @default("pending") // pending | approved | rejected — supplier's review of THIS state of the collateral, independent of lifecycle status above
+  reviewedAt       DateTime?
+  releasedAt       DateTime?
+  forfeitedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  events           CollateralEvent[]
+}
+
+model CollateralEvent {
+  id                  String   @id @default(cuid())
+  collateralProfileId String
+  collateralProfile   CollateralProfile @relation(fields: [collateralProfileId], references: [id])
+  eventType           String   // created | deposit | corrected | recomputed | released | forfeited | approved | rejected
+  amount              Int?     // for deposit events
+  note                String?
+  actor               String   // trader | supplier | system
+  createdAt           DateTime @default(now())
+
+  @@index([collateralProfileId])
 }
 
 model OtpCode {
