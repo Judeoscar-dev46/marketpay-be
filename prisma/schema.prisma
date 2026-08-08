@@ -209,14 +209,15 @@ model OtpCode {
 }
 
 model Transaction {
-  id             String          @id @default(cuid())
-  traderId       String
-  trader         Trader          @relation(fields: [traderId], references: [id])
-  amount         Int
-  status         String          @default("pending")
-  checkoutRef    String?
-  checkoutUrl    String?
-  webhookRef     String?         @unique
+  id              String          @id @default(cuid())
+  traderId        String
+  trader          Trader          @relation(fields: [traderId], references: [id])
+  amount          Int
+  status          String          @default("pending")
+  clientRequestId String?         @unique
+  checkoutRef     String?
+  checkoutUrl     String?
+  webhookRef      String?         @unique
   workingCapital Int?
   supplierAmount Int?
   savingsAmount  Int?

@@ -6,14 +6,32 @@ const collateral = require('../services/collateral');
 
 const router = express.Router();
 
-// GET /api/webhook/nomba — browser redirect from Nomba after payment completes
-// Nomba sends: ?orderId=...&orderReference=<our tx.id>
+function rawBodyToString(rawBody) {
+  if (rawBody == null) return '';
+  if (Buffer.isBuffer(rawBody)) return rawBody.toString('utf8');
+  if (typeof rawBody === 'string') return rawBody;
+  try {
+    return JSON.stringify(rawBody);
+  } catch {
+    return '';
+  }
+}
+
+function isWebhookProbe(rawBody, signature) {
+  if (signature) return false;
+  const body = rawBodyToString(rawBody).trim();
+  return !body || body === '{}' || body === 'null' || body === '[]';
+}
+
+// GET /api/webhook/nomba
+// - No query: URL verification / health check for Nomba dashboard (must return 200)
+// - With orderReference: browser redirect after Nomba Checkout completes
 router.get('/nomba', async (req, res) => {
   const { orderReference } = req.query;
   const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
 
   if (!orderReference) {
-    return res.redirect(`${frontendUrl}/dashboard`);
+    return res.status(200).json({ status: 'ok', service: 'marketpay-nomba-webhook' });
   }
 
   try {
@@ -55,12 +73,18 @@ router.post('/nomba', express.raw({ type: 'application/json' }), async (req, res
   const rawBody = req.body;
   const signature = req.headers['x-nomba-signature'] || req.headers['nomba-signature'] || '';
 
+  // Nomba dashboard validates webhook URLs with an unsigned empty/minimal POST.
+  // Accept those probes with 200 without processing. Real events still require a valid signature.
+  if (isWebhookProbe(rawBody, signature)) {
+    return res.status(200).json({ status: 'ok' });
+  }
+
   try {
     if (!nomba.verifyWebhookSignature(rawBody, signature)) {
       return res.status(401).json({ error: 'Invalid signature' });
     }
 
-    const event = JSON.parse(rawBody.toString());
+    const event = JSON.parse(rawBodyToString(rawBody) || '{}');
     const nombaRef = event?.data?.reference || event?.data?.transactionReference || event?.reference;
     const checkoutRef = event?.data?.orderReference || event?.data?.checkoutReference;
 

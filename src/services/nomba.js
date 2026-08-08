@@ -12,25 +12,31 @@ function isStub() {
 async function getAccessToken() {
   if (_accessToken && Date.now() < _tokenExpiry) return _accessToken;
 
-  const res = await axios.post(
-    `${BASE_URL}/auth/token/issue`,
-    {
-      grant_type: 'client_credentials',
-      client_id: process.env.NOMBA_CLIENT_ID,
-      client_secret: process.env.NOMBA_CLIENT_SECRET,
-    },
-    {
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        accountId: process.env.NOMBA_ACCOUNT_ID,
+  try {
+    const res = await axios.post(
+      `${BASE_URL}/auth/token/issue`,
+      {
+        grant_type: 'client_credentials',
+        client_id: process.env.NOMBA_CLIENT_ID,
+        client_secret: process.env.NOMBA_CLIENT_SECRET,
       },
-    }
-  );
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          accountId: process.env.NOMBA_ACCOUNT_ID,
+        },
+      }
+    );
 
-  _accessToken = res.data.data.access_token;
-  _tokenExpiry = Date.now() + (res.data.data.expires_in - 60) * 1000;
-  return _accessToken;
+    _accessToken = res.data.data.access_token;
+    _tokenExpiry = Date.now() + (res.data.data.expires_in - 60) * 1000;
+    return _accessToken;
+  } catch (err) {
+    console.error('Nomba auth token error:', err?.response?.data || err?.message || err);
+    const detail = err?.response?.data?.description || err?.response?.data?.message || err?.message || 'auth failed';
+    throw new Error(`Nomba checkout failed: token issue — ${detail}`);
+  }
 }
 
 function authHeaders(token) {
@@ -69,32 +75,40 @@ async function createCheckout({ amount, reference, callbackUrl }) {
   if (isStub()) {
     return { checkoutUrl: `https://checkout.stub.marketpay.app/${reference}`, checkoutRef: reference };
   }
-  const token = await getAccessToken();
-  const amountNaira = (amount / 100).toFixed(2);
+  try {
+    const token = await getAccessToken();
+    const amountNaira = (amount / 100).toFixed(2);
 
-  const res = await axios.post(
-    `${BASE_URL}/checkout/order`,
-    {
-      order: {
-        orderReference: reference,
-        amount: amountNaira,
-        currency: 'NGN',
-        callbackUrl: callbackUrl || process.env.NOMBA_CALLBACK_URL || 'https://example.com',
-        customerEmail: 'customer@marketpay.app',
+    const res = await axios.post(
+      `${BASE_URL}/checkout/order`,
+      {
+        order: {
+          orderReference: reference,
+          amount: amountNaira,
+          currency: 'NGN',
+          callbackUrl: callbackUrl || process.env.NOMBA_CALLBACK_URL || 'https://example.com',
+          customerEmail: 'customer@marketpay.app',
+        },
       },
-    },
-    { headers: authHeaders(token) }
-  );
+      { headers: authHeaders(token) }
+    );
 
-  if (res.data.code !== '00') {
-    throw new Error(`Nomba checkout failed: ${res.data.code} — ${res.data.description}`);
+    if (res.data.code !== '00') {
+      console.error('Nomba checkout error response:', JSON.stringify(res.data));
+      throw new Error(`Nomba checkout failed: ${res.data.code} — ${res.data.description}`);
+    }
+
+    const d = res.data.data;
+    return {
+      checkoutUrl: d.checkoutLink,
+      checkoutRef: d.orderReference || reference,
+    };
+  } catch (err) {
+    if (err?.message?.startsWith('Nomba checkout failed:')) throw err;
+    console.error('Nomba checkout request error:', err?.response?.data || err?.message || err);
+    const detail = err?.response?.data?.description || err?.response?.data?.message || err?.message || 'unknown error';
+    throw new Error(`Nomba checkout failed: ${detail}`);
   }
-
-  const d = res.data.data;
-  return {
-    checkoutUrl: d.checkoutLink,
-    checkoutRef: d.orderReference || reference,
-  };
 }
 
 async function initiateTransfer({ from, to, amount, reference }) {
