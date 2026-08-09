@@ -179,12 +179,14 @@ function verifyWebhookSignature(rawBody, signatureHeader) {
   }
 }
 
-// Resolves a bank account number to its registered account name, so a trader can confirm
-// they're adding the right supplier before the record (and future money) is saved.
+// Resolves a bank account number to its registered account name via Nomba
+// POST /v1/transfers/bank/lookup. Returns { accountName, verified: true } only when
+// Nomba returns a non-empty account name. Throws on stub-off lookup failures.
 async function resolveAccountName({ accountNumber, bankCode }) {
   if (isStub()) {
     return { accountName: 'Verified Test Supplier Ltd', verified: true };
   }
+
   try {
     const token = await getAccessToken();
     const res = await axios.post(
@@ -192,13 +194,33 @@ async function resolveAccountName({ accountNumber, bankCode }) {
       { accountNumber, bankCode },
       { headers: authHeaders(token) }
     );
-    if (res.data.code !== '00') throw new Error(res.data.description || 'lookup failed');
-    return { accountName: res.data.data?.accountName, verified: true };
+
+    if (res.data.code !== '00') {
+      console.warn('Nomba bank lookup rejected:', JSON.stringify(res.data));
+      throw new Error(res.data.description || 'Bank account lookup failed');
+    }
+
+    const data = res.data.data || {};
+    const accountName = (data.accountName || data.account_name || data.name || '').trim();
+    if (!accountName) {
+      console.warn('Nomba bank lookup missing accountName:', JSON.stringify(res.data));
+      throw new Error('Bank returned no account name for this number');
+    }
+
+    return { accountName, verified: true };
   } catch (err) {
-    // Degrade gracefully — the trader-entered name is used instead, just flagged as
-    // unverified rather than blocking supplier creation.
-    console.warn('Nomba resolveAccountName unavailable, falling back to unverified:', err.message);
-    return { accountName: null, verified: false };
+    if (err?.message && !err.response) {
+      // Already a clear Error from above, or network error without Axios body
+      console.warn('Nomba resolveAccountName failed:', err.message);
+      throw err;
+    }
+    console.warn('Nomba resolveAccountName failed:', err?.response?.data || err.message || err);
+    const detail =
+      err?.response?.data?.description ||
+      err?.response?.data?.message ||
+      err?.message ||
+      'Bank account lookup failed';
+    throw new Error(detail);
   }
 }
 
@@ -229,10 +251,19 @@ async function getBanks() {
   }
   const raw = res.data.data?.results || res.data.data || [];
   // Normalize Nomba bank objects so BankPicker always gets { code, name }.
-  _banksCache = (Array.isArray(raw) ? raw : []).map((b) => ({
-    code: String(b.code || b.bankCode || ''),
-    name: b.name || b.bankName || String(b.code || b.bankCode || ''),
-  })).filter((b) => b.code);
+  // Nomba sometimes returns the same bankCode more than once — dedupe so React keys stay unique.
+  const seen = new Set();
+  _banksCache = (Array.isArray(raw) ? raw : [])
+    .map((b) => ({
+      code: String(b.code || b.bankCode || ''),
+      name: b.name || b.bankName || String(b.code || b.bankCode || ''),
+    }))
+    .filter((b) => {
+      if (!b.code || seen.has(b.code)) return false;
+      seen.add(b.code);
+      return true;
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
   _banksCacheAt = Date.now();
   return _banksCache;
 }

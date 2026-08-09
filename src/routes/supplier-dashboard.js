@@ -8,11 +8,44 @@ const router = express.Router();
 
 router.use(requireAuth, requireSupplier);
 
+async function syncVerifiedBankToTraderRelationships(supplierUser) {
+  if (!supplierUser?.id || !supplierUser.accountNameVerified || !supplierUser.bankCode || !supplierUser.accountNumber) {
+    return;
+  }
+
+  const bankSync = {
+    bankCode: supplierUser.bankCode,
+    bankName: supplierUser.bankName,
+    accountNumber: supplierUser.accountNumber,
+    resolvedAccountName: supplierUser.resolvedAccountName,
+    accountNameVerified: true,
+  };
+
+  await prisma.supplier.updateMany({
+    where: { supplierUserId: supplierUser.id, archivedAt: null },
+    data: bankSync,
+  });
+
+  await prisma.supplier.updateMany({
+    where: {
+      phone: supplierUser.phone,
+      supplierUserId: null,
+      archivedAt: null,
+    },
+    data: {
+      ...bankSync,
+      supplierUserId: supplierUser.id,
+    },
+  });
+}
+
 // GET /api/supplier-dashboard/profile — this supplier's own invite/profile data
 router.get('/profile', async (req, res) => {
   try {
     const supplierUser = await prisma.supplierUser.findUnique({ where: { id: req.auth.id } });
     if (!supplierUser) return res.status(404).json({ error: 'Profile not found' });
+
+    await syncVerifiedBankToTraderRelationships(supplierUser);
     res.json({ data: supplierUser });
   } catch (err) {
     console.error(err);
@@ -20,24 +53,39 @@ router.get('/profile', async (req, res) => {
   }
 });
 
-// POST /api/supplier-dashboard/resolve-name — same Nomba bank lookup used by trader KYC
-// (nomba.resolveAccountName → POST /v1/transfers/bank/lookup)
+// POST /api/supplier-dashboard/resolve-name — Nomba lookup, then persist + sync trader rows
 router.post('/resolve-name', async (req, res) => {
-  const { accountNumber, bankCode } = req.body;
+  const { accountNumber, bankCode, bankName } = req.body;
   if (!accountNumber?.trim() || !bankCode) {
     return res.status(400).json({ error: 'accountNumber and bankCode are required' });
   }
   try {
     const result = await nomba.resolveAccountName({ accountNumber: accountNumber.trim(), bankCode });
-    res.json({ data: result });
+    if (!result?.accountName || !result.verified) {
+      return res.status(400).json({ error: 'Could not verify this bank account. Check the number and bank.' });
+    }
+
+    const supplierUser = await prisma.supplierUser.update({
+      where: { id: req.auth.id },
+      data: {
+        accountNumber: accountNumber.trim(),
+        bankCode,
+        ...(bankName !== undefined ? { bankName: bankName || null } : {}),
+        resolvedAccountName: result.accountName,
+        accountNameVerified: true,
+      },
+    });
+
+    await syncVerifiedBankToTraderRelationships(supplierUser);
+
+    res.json({ data: { accountName: result.accountName, verified: true } });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to resolve account name' });
+    console.error('Supplier resolve-name error:', err?.message || err);
+    res.status(400).json({ error: err?.message || 'Failed to resolve account name' });
   }
 });
 
 // PATCH /api/supplier-dashboard/profile — set up business name, self-verified bank details,
-// and suggested terms; generates an invite code the first time the required fields are present.
 router.patch('/profile', async (req, res) => {
   const {
     businessName, bankCode, bankName, accountNumber,
@@ -66,16 +114,28 @@ router.patch('/profile', async (req, res) => {
   }
 
   try {
-    // Re-verify via the same Nomba lookup KYC uses whenever bank details are being saved.
+    // Re-verify via Nomba whenever bank details are being saved — never trust client flags alone.
     const nextBankCode = data.bankCode !== undefined ? data.bankCode : undefined;
     const nextAccountNumber = data.accountNumber !== undefined ? data.accountNumber : undefined;
     if (nextBankCode && nextAccountNumber) {
-      const lookup = await nomba.resolveAccountName({
-        accountNumber: nextAccountNumber,
-        bankCode: nextBankCode,
-      });
-      if (lookup.accountName) data.resolvedAccountName = lookup.accountName;
-      data.accountNameVerified = !!lookup.verified;
+      try {
+        const lookup = await nomba.resolveAccountName({
+          accountNumber: nextAccountNumber,
+          bankCode: nextBankCode,
+        });
+        if (!lookup?.accountName || !lookup.verified) {
+          return res.status(400).json({
+            error: 'Could not verify this bank account. Check the number and bank, then verify again.',
+          });
+        }
+        data.resolvedAccountName = lookup.accountName;
+        data.accountNameVerified = true;
+      } catch (lookupErr) {
+        console.error('Supplier profile bank re-verify failed:', lookupErr?.message || lookupErr);
+        return res.status(400).json({
+          error: lookupErr?.message || 'Could not verify this bank account. Try again.',
+        });
+      }
     }
 
     let supplierUser = await prisma.supplierUser.update({ where: { id: req.auth.id }, data });
@@ -83,6 +143,9 @@ router.patch('/profile', async (req, res) => {
     if (supplierUser.businessName && supplierUser.bankCode && supplierUser.accountNumber) {
       supplierUser = await ensureInviteCode(req.auth.id);
     }
+
+    // Keep trader-facing Supplier rows in sync (they own the Unverified badge).
+    await syncVerifiedBankToTraderRelationships(supplierUser);
 
     res.json({ data: supplierUser });
   } catch (err) {

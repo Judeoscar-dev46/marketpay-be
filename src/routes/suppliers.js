@@ -39,10 +39,13 @@ router.post('/resolve-name', requireAuth, async (req, res) => {
   }
   try {
     const result = await nomba.resolveAccountName({ accountNumber: accountNumber.trim(), bankCode });
-    res.json({ data: result });
+    if (!result?.accountName || !result.verified) {
+      return res.status(400).json({ error: 'Could not verify this bank account. Check the number and bank.' });
+    }
+    res.json({ data: { accountName: result.accountName, verified: true } });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to resolve account name' });
+    console.error('resolve-name error:', err?.message || err);
+    res.status(400).json({ error: err?.message || 'Failed to resolve account name' });
   }
 });
 

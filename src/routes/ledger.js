@@ -50,15 +50,26 @@ router.get('/:traderId/today', async (req, res) => {
   }
 });
 
-// GET /api/ledger/:traderId/history
+// GET /api/ledger/:traderId/history?range=7|30|all
 router.get('/:traderId/history', async (req, res) => {
   const { traderId } = req.params;
+  const rawRange = String(req.query.range || '7');
+  const range = ['7', '30', 'all'].includes(rawRange) ? rawRange : '7';
 
   try {
+    const where = { traderId };
+
+    if (range !== 'all') {
+      const days = range === '30' ? 30 : 7;
+      const from = new Date();
+      from.setHours(0, 0, 0, 0);
+      from.setDate(from.getDate() - (days - 1));
+      where.date = { gte: from };
+    }
+
     const history = await prisma.dailyLedger.findMany({
-      where: { traderId },
+      where,
       orderBy: { date: 'desc' },
-      take: 7,
     });
 
     res.json({ data: history });
