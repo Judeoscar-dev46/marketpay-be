@@ -134,25 +134,56 @@ async function initiateTransfer({ from, to, amount, reference }) {
   };
 }
 
-async function payToBank({ fromAccountId, accountNumber, bankCode, amount, reference, narration }) {
+async function payToBank({
+  fromAccountId,
+  accountNumber,
+  accountName,
+  bankCode,
+  amount,
+  reference,
+  narration,
+  senderName,
+}) {
   if (isStub()) {
     return { transferRef: `stub-payout-${reference}` };
   }
+  if (!accountNumber || !bankCode || !accountName || !reference) {
+    throw new Error('accountNumber, accountName, bankCode, and reference are required for bank transfer');
+  }
+
   const token = await getAccessToken();
-  const res = await axios.post(
-    `${BASE_URL}/transfers/bank`,
-    {
-      sourceAccountId: fromAccountId,
-      destinationAccountNumber: accountNumber,
-      destinationBankCode: bankCode,
-      amount,
-      currency: 'NGN',
-      reference,
-      narration: narration || `MarketPay supplier payout ${reference}`,
-    },
-    { headers: authHeaders(token) }
-  );
-  return { transferRef: res.data.data?.transferReference || reference };
+  const amountNaira = Number((amount / 100).toFixed(2));
+  const body = {
+    amount: amountNaira,
+    accountNumber,
+    accountName,
+    bankCode,
+    merchantTxRef: reference,
+    senderName: senderName || 'MarketPay',
+    narration: narration || `MarketPay supplier payout ${reference}`,
+  };
+  // Debit a specific virtual/sub-account when Nomba has profiled us for it.
+  if (fromAccountId && fromAccountId !== process.env.NOMBA_ACCOUNT_ID) {
+    body.sourceAccountId = fromAccountId;
+  }
+
+  try {
+    const res = await axios.post(`${BASE_URL}/transfers/bank`, body, { headers: authHeaders(token) });
+    if (res.data.code && res.data.code !== '00') {
+      console.error('Nomba payToBank error response:', JSON.stringify(res.data));
+      throw new Error(res.data.description || `Nomba bank transfer failed: ${res.data.code}`);
+    }
+    const d = res.data.data || {};
+    return { transferRef: d.id || d.transferReference || d.meta?.merchantTxRef || reference };
+  } catch (err) {
+    if (err?.message?.startsWith('Nomba bank transfer failed')) throw err;
+    console.error('Nomba payToBank request error:', err?.response?.data || err?.message || err);
+    const errors = err?.response?.data?.errors;
+    const detail = Array.isArray(errors)
+      ? errors.join(', ')
+      : (err?.response?.data?.description || err?.message || 'bank transfer failed');
+    throw new Error(`Nomba bank transfer failed: ${detail}`);
+  }
 }
 
 function verifyWebhookSignature(rawBody, signatureHeader) {

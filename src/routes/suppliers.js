@@ -4,6 +4,7 @@ const nomba = require('../services/nomba');
 const { requireAuth, requireTrader, requireSupplier } = require('../middleware/auth');
 const { activeSupplierWhere, assertAllocationFits } = require('../services/supplierAllocation');
 const supplierInvites = require('../services/supplierInvites');
+const { assertKycComplete } = require('../lib/kyc');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
 
@@ -77,7 +78,7 @@ router.post('/redeem-invite', requireAuth, requireTrader, async (req, res) => {
     res.status(201).json({ data: supplier });
   } catch (err) {
     if (err instanceof supplierInvites.RedemptionError) {
-      return res.status(err.status).json({ error: err.message });
+      return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     }
     console.error(err);
     res.status(500).json({ error: 'Failed to redeem invite code' });
@@ -122,6 +123,9 @@ router.post('/', requireAuth, requireTrader, async (req, res) => {
   try {
     const trader = await prisma.trader.findUnique({ where: { id: traderId } });
     if (!trader) return res.status(404).json({ error: 'Trader not found' });
+    if (mode === 'credit_repayment') {
+      assertKycComplete(trader, 'Complete KYC to take supplier credit');
+    }
 
     await assertAllocationFits({ traderId, allocationPct, trader });
 
@@ -161,7 +165,7 @@ router.post('/', requireAuth, requireTrader, async (req, res) => {
 
     res.status(201).json({ data: supplier });
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ error: err.message });
+    if (err.status) return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     console.error(err);
     res.status(500).json({ error: 'Failed to add supplier' });
   }
@@ -189,6 +193,9 @@ router.patch('/:id', requireAuth, requireTrader, async (req, res) => {
 
     if (mode !== undefined) {
       if (!['restock', 'credit_repayment'].includes(mode)) return res.status(400).json({ error: 'Invalid mode' });
+      if (mode === 'credit_repayment' && supplier.mode !== 'credit_repayment') {
+        assertKycComplete(trader, 'Complete KYC to take supplier credit');
+      }
       data.mode = mode;
     }
 
@@ -213,7 +220,7 @@ router.patch('/:id', requireAuth, requireTrader, async (req, res) => {
     const updated = await prisma.supplier.update({ where: { id }, data });
     res.json({ data: updated });
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ error: err.message });
+    if (err.status) return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     console.error(err);
     res.status(500).json({ error: 'Failed to update supplier' });
   }
@@ -248,12 +255,18 @@ router.post('/:id/payout', requireAuth, requireTrader, async (req, res) => {
     if (payAmount <= 0) return res.status(400).json({ error: 'Nothing to pay out' });
 
     const ref = `supplier-payout-${id}-${Date.now()}`;
+    const trader = await prisma.trader.findUnique({
+      where: { id: supplier.traderId },
+      select: { name: true },
+    });
     const result = await nomba.payToBank({
       fromAccountId: supplier.virtualAccountId,
       accountNumber: supplier.accountNumber,
+      accountName: supplier.resolvedAccountName || supplier.name,
       bankCode: supplier.bankCode,
       amount: payAmount,
       reference: ref,
+      senderName: trader?.name || 'MarketPay',
       narration: `MarketPay supplier payout — ${supplier.name}`,
     });
 

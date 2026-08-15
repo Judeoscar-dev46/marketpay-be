@@ -2,6 +2,7 @@ const express = require('express');
 const prisma = require('../lib/prisma');
 const nomba = require('../services/nomba');
 const { requireAuth, requireTrader } = require('../middleware/auth');
+const { assertKycComplete } = require('../lib/kyc');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
 
@@ -114,18 +115,29 @@ router.post('/:traderId/pay-supplier', requireOwnTrader, async (req, res) => {
   try {
     const trader = await prisma.trader.findUnique({
       where: { id: traderId },
-      select: { supplierAccountId: true },
+      select: { id: true, name: true, supplierAccountId: true },
     });
     if (!trader) return res.status(404).json({ error: 'Trader not found' });
+
+    const matchedSupplier = await prisma.supplier.findFirst({
+      where: { traderId, accountNumber, bankCode, archivedAt: null },
+      select: { resolvedAccountName: true, name: true },
+    });
+    const accountName = matchedSupplier?.resolvedAccountName || matchedSupplier?.name || bankName;
+    if (!accountName) {
+      return res.status(400).json({ error: 'Could not resolve the destination account name' });
+    }
 
     const ref = `payout-${traderId}-${Date.now()}`;
     const result = await nomba.payToBank({
       fromAccountId: trader.supplierAccountId,
       accountNumber,
+      accountName,
       bankCode,
       amount,
       reference: ref,
-      narration: `Supplier payment to ${bankName}`,
+      senderName: trader.name,
+      narration: `Supplier payment to ${bankName || accountName}`,
     });
 
     res.json({ data: { transferRef: result.transferRef, amount } });
@@ -146,8 +158,10 @@ router.post('/:traderId/withdraw', requireOwnTrader, async (req, res) => {
   try {
     const trader = await prisma.trader.findUnique({ where: { id: traderId } });
     if (!trader) return res.status(404).json({ error: 'Trader not found' });
-    if (trader.kycStatus !== 'submitted' || !trader.accountNumber || !trader.bankCode) {
-      return res.status(403).json({ error: 'Complete KYC and add your bank account before withdrawing' });
+    try {
+      assertKycComplete(trader, 'Complete KYC and add your market details before withdrawing');
+    } catch (err) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
     }
 
     const fromAccountId = source === 'savings' ? trader.savingsAccountId : trader.mainVirtualAccountId;
@@ -155,9 +169,11 @@ router.post('/:traderId/withdraw', requireOwnTrader, async (req, res) => {
     const result = await nomba.payToBank({
       fromAccountId,
       accountNumber: trader.accountNumber,
+      accountName: trader.resolvedAccountName || trader.name,
       bankCode: trader.bankCode,
       amount,
       reference: ref,
+      senderName: trader.name,
       narration: `MarketPay withdrawal — ${trader.name}`,
     });
 

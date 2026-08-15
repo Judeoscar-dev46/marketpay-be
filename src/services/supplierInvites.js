@@ -1,15 +1,17 @@
 const prisma = require('../lib/prisma');
 const nomba = require('./nomba');
 const { assertAllocationFits } = require('./supplierAllocation');
+const { assertKycComplete } = require('../lib/kyc');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I/L — avoids mis-transcription
 const CODE_LENGTH = 8;
 
 class RedemptionError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -105,6 +107,13 @@ async function redeemInvite({ traderId, rawCode, allocationPct, mode, payoutSche
   const resolvedMode = ['restock', 'credit_repayment'].includes(mode)
     ? mode
     : (supplierUser.suggestedMode || 'restock');
+  if (resolvedMode === 'credit_repayment') {
+    try {
+      assertKycComplete(trader, 'Complete KYC to take supplier credit');
+    } catch (err) {
+      throw new RedemptionError(err.status || 403, err.message, err.code);
+    }
+  }
   const resolvedAllocationPct = Number.isInteger(allocationPct)
     ? allocationPct
     : (supplierUser.suggestedAllocationPct || 10);

@@ -5,6 +5,7 @@ const nomba = require('../services/nomba');
 const otp = require('../services/otp');
 const { issueSession, requireAuth, requireTrader } = require('../middleware/auth');
 const supplierInvites = require('../services/supplierInvites');
+const { isKycComplete } = require('../lib/kyc');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
 
@@ -32,6 +33,10 @@ const TRADER_SELECT = {
   accountNumber: true,
   resolvedAccountName: true,
   accountNameVerified: true,
+  marketArea: true,
+  stallLandmark: true,
+  neighbourName: true,
+  neighbourContact: true,
 };
 
 // POST /api/auth/register
@@ -148,10 +153,40 @@ router.post('/kyc', requireAuth, requireTrader, async (req, res) => {
       },
       select: TRADER_SELECT,
     });
-    res.json({ data: trader });
+    res.json({ data: trader, kycComplete: isKycComplete(trader) });
   } catch (err) {
     console.error('KYC submission error:', err.message || err);
     res.status(500).json({ error: 'Failed to submit KYC. Try again.' });
+  }
+});
+
+// PATCH /api/auth/kyc/footprint — market stall details so a supplier can find this trader
+router.patch('/kyc/footprint', requireAuth, requireTrader, async (req, res) => {
+  const { market, marketArea, stallLandmark, neighbourName, neighbourContact } = req.body;
+
+  const fields = { market, marketArea, stallLandmark, neighbourName, neighbourContact };
+  for (const [key, value] of Object.entries(fields)) {
+    if (!value?.trim()) {
+      return res.status(400).json({ error: `${key} is required` });
+    }
+  }
+
+  try {
+    const trader = await prisma.trader.update({
+      where: { id: req.auth.id },
+      data: {
+        market: market.trim(),
+        marketArea: marketArea.trim(),
+        stallLandmark: stallLandmark.trim(),
+        neighbourName: neighbourName.trim(),
+        neighbourContact: neighbourContact.trim(),
+      },
+      select: TRADER_SELECT,
+    });
+    res.json({ data: trader, kycComplete: isKycComplete(trader) });
+  } catch (err) {
+    console.error('KYC footprint error:', err.message || err);
+    res.status(500).json({ error: 'Failed to save market details. Try again.' });
   }
 });
 

@@ -123,9 +123,11 @@ async function processPayment(transactionId) {
         nomba.payToBank({
           fromAccountId: trader.mainVirtualAccountId,
           accountNumber: supplier.accountNumber,
+          accountName: supplier.resolvedAccountName || supplier.name,
           bankCode: supplier.bankCode,
           amount: floor.transferNow,
           reference,
+          senderName: trader.name,
           narration: `MarketPay ${supplier.mode === 'credit_repayment' ? 'repayment' : 'restock'} — ${supplier.name}`,
         })
       );

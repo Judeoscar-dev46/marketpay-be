@@ -35,6 +35,10 @@ model Trader {
   accountNumber        String?
   resolvedAccountName  String?
   accountNameVerified  Boolean       @default(false)
+  marketArea           String?
+  stallLandmark        String?
+  neighbourName        String?
+  neighbourContact     String?
   transactions         Transaction[]
   dailyLedger          DailyLedger[]
   suppliers            Supplier[]
@@ -254,4 +258,15 @@ model DailyLedger {
   updatedAt        DateTime @updatedAt
 
   @@unique([traderId, date])
+}
+
+model WaitlistEntry {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  role      String?  // trader | supplier
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([createdAt])
 }

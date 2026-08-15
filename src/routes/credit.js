@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const prisma = require('../lib/prisma');
 const { requireAuth, requireTrader, requireSupplier } = require('../middleware/auth');
 const { emitToSupplierUser, emitToTrader } = require('../services/split');
+const { assertKycComplete } = require('../lib/kyc');
 
 const router = express.Router();
 
@@ -32,6 +33,10 @@ router.post('/entries', requireAuth, requireTrader, async (req, res) => {
   }
 
   try {
+    const trader = await prisma.trader.findUnique({ where: { id: req.auth.id } });
+    if (!trader) return res.status(404).json({ error: 'Trader not found' });
+    assertKycComplete(trader, 'Complete KYC to take supplier credit');
+
     const supplier = await loadSupplierForTrader(supplierId, req.auth.id);
     if (!supplier) return res.status(404).json({ error: 'Supplier not found' });
     if (supplier.mode !== 'credit_repayment') {
@@ -98,6 +103,9 @@ router.post('/entries', requireAuth, requireTrader, async (req, res) => {
         : null,
     });
   } catch (err) {
+    if (err.code === 'KYC_REQUIRED') {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
     console.error(err);
     res.status(500).json({ error: 'Failed to log credit entry' });
   }

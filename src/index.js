@@ -21,6 +21,7 @@ const creditRouter = require('./routes/credit');
 const creditAgreementRouter = require('./routes/credit-agreement');
 const collateralRouter = require('./routes/collateral');
 const supplierDashboardRouter = require('./routes/supplier-dashboard');
+const waitlistRouter = require('./routes/waitlist');
 
 const app = express();
 
@@ -53,6 +54,7 @@ app.use('/api/credit', creditRouter);
 app.use('/api/credit-agreement', creditAgreementRouter);
 app.use('/api/collateral', collateralRouter);
 app.use('/api/supplier-dashboard', supplierDashboardRouter);
+app.use('/api/waitlist', waitlistRouter);
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`MarketPay backend listening on port ${PORT}`));
