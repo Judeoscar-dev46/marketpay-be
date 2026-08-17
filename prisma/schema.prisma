@@ -84,6 +84,8 @@ model SupplierUser {
   phone                  String     @unique
   name                   String?
   businessName           String?
+  bvn                    String?
+  kycStatus              String     @default("pending") // pending | submitted
   bankCode               String?
   bankName               String?
   accountNumber          String?

@@ -1,7 +1,7 @@
 const prisma = require('../lib/prisma');
 const nomba = require('./nomba');
 const { assertAllocationFits } = require('./supplierAllocation');
-const { assertKycComplete } = require('../lib/kyc');
+const { assertKycComplete, assertSupplierKycComplete, isSupplierKycComplete } = require('../lib/kyc');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O, 1/I/L — avoids mis-transcription
@@ -40,6 +40,9 @@ function maskAccountNumber(accountNumber) {
 async function ensureInviteCode(supplierUserId) {
   const supplierUser = await prisma.supplierUser.findUnique({ where: { id: supplierUserId } });
   if (!supplierUser) throw new RedemptionError(404, 'Supplier profile not found');
+  if (!isSupplierKycComplete(supplierUser)) {
+    throw new RedemptionError(403, 'Complete KYC before generating an invite code', 'SUPPLIER_KYC_REQUIRED');
+  }
   if (supplierUser.inviteCode) return supplierUser;
 
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -71,6 +74,7 @@ async function previewInvite(rawCode) {
     suggestedMode: supplierUser.suggestedMode || 'restock',
     suggestedAllocationPct: supplierUser.suggestedAllocationPct || 10,
     formattedCode: formatCode(code),
+    kycComplete: isSupplierKycComplete(supplierUser),
   };
 }
 
@@ -95,6 +99,9 @@ async function redeemInvite({ traderId, rawCode, allocationPct, mode, payoutSche
   if (!supplierUser.accountNumber || !supplierUser.bankCode) {
     throw new RedemptionError(400, 'This supplier has not finished setting up their profile yet');
   }
+  if (!isSupplierKycComplete(supplierUser)) {
+    throw new RedemptionError(403, 'This supplier has not completed KYC yet', 'SUPPLIER_KYC_REQUIRED');
+  }
 
   const existingRelationship = await prisma.supplier.findFirst({
     where: { traderId, supplierUserId: supplierUser.id, archivedAt: null },
@@ -110,6 +117,7 @@ async function redeemInvite({ traderId, rawCode, allocationPct, mode, payoutSche
   if (resolvedMode === 'credit_repayment') {
     try {
       assertKycComplete(trader, 'Complete KYC to take supplier credit');
+      assertSupplierKycComplete(supplierUser, 'This supplier must complete KYC before you can take credit from them');
     } catch (err) {
       throw new RedemptionError(err.status || 403, err.message, err.code);
     }

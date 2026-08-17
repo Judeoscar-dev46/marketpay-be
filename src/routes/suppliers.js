@@ -1,14 +1,28 @@
 const express = require('express');
+const router = express.Router();
 const prisma = require('../lib/prisma');
 const nomba = require('../services/nomba');
 const { requireAuth, requireTrader, requireSupplier } = require('../middleware/auth');
 const { activeSupplierWhere, assertAllocationFits } = require('../services/supplierAllocation');
 const supplierInvites = require('../services/supplierInvites');
-const { assertKycComplete } = require('../lib/kyc');
+const { assertKycComplete, assertSupplierKycComplete, isSupplierKycComplete, supplierKycSelect } = require('../lib/kyc');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
 
-const router = express.Router();
+function withSupplierKycFlag(supplier) {
+  const { supplierUser, ...rest } = supplier;
+  return {
+    ...rest,
+    supplierKycComplete: isSupplierKycComplete(supplierUser),
+  };
+}
+
+async function assertCreditEligibleSupplierUser(supplierUser) {
+  assertSupplierKycComplete(
+    supplierUser,
+    'This supplier must sign in and complete KYC before you can take credit from them',
+  );
+}
 
 async function makeSubAccount({ traderName, supplierName, ref }) {
   if (USE_STUB) {
@@ -64,6 +78,24 @@ router.get('/invites/:code', async (req, res) => {
   }
 });
 
+// GET /api/suppliers/kyc-status?phone= — whether this phone is a KYC'd MarketPay supplier
+router.get('/kyc-status', requireAuth, requireTrader, async (req, res) => {
+  const phone = String(req.query.phone || '').trim();
+  if (!phone) return res.status(400).json({ error: 'phone is required' });
+  try {
+    const supplierUser = await prisma.supplierUser.findUnique({ where: { phone } });
+    res.json({
+      data: {
+        exists: !!supplierUser,
+        kycComplete: isSupplierKycComplete(supplierUser),
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to look up supplier KYC status' });
+  }
+});
+
 // POST /api/suppliers/redeem-invite — an already-logged-in trader redeeming a supplier's code
 router.post('/redeem-invite', requireAuth, requireTrader, async (req, res) => {
   const { code, allocationPct, mode, payoutSchedule } = req.body;
@@ -90,10 +122,10 @@ router.get('/', requireAuth, requireTrader, async (req, res) => {
   try {
     const suppliers = await prisma.supplier.findMany({
       where: activeSupplierWhere(req.auth.id),
-      include: { creditLedger: true },
+      include: { creditLedger: true, supplierUser: { select: supplierKycSelect() } },
       orderBy: { createdAt: 'asc' },
     });
-    res.json({ data: suppliers });
+    res.json({ data: suppliers.map(withSupplierKycFlag) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch suppliers' });
@@ -129,6 +161,12 @@ router.post('/', requireAuth, requireTrader, async (req, res) => {
 
     await assertAllocationFits({ traderId, allocationPct, trader });
 
+    // Matching by phone alone never implies the supplier has accepted this relationship.
+    const supplierUser = await prisma.supplierUser.findUnique({ where: { phone: phone.trim() } });
+    if (mode === 'credit_repayment') {
+      assertCreditEligibleSupplierUser(supplierUser);
+    }
+
     let virtualAccountId = null;
     let virtualAccountNumber = null;
     if (schedule !== 'immediate') {
@@ -140,9 +178,6 @@ router.post('/', requireAuth, requireTrader, async (req, res) => {
       virtualAccountId = va.accountId;
       virtualAccountNumber = va.accountNumber;
     }
-
-    // Matching by phone alone never implies the supplier has accepted this relationship.
-    const supplierUser = await prisma.supplierUser.findUnique({ where: { phone: phone.trim() } });
 
     const supplier = await prisma.supplier.create({
       data: {
@@ -163,7 +198,7 @@ router.post('/', requireAuth, requireTrader, async (req, res) => {
       },
     });
 
-    res.status(201).json({ data: supplier });
+    res.status(201).json({ data: withSupplierKycFlag({ ...supplier, supplierUser }) });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     console.error(err);
@@ -177,7 +212,10 @@ router.patch('/:id', requireAuth, requireTrader, async (req, res) => {
   const { allocationPct, mode, payoutSchedule, restockFallbackPct } = req.body;
 
   try {
-    const supplier = await prisma.supplier.findUnique({ where: { id } });
+    const supplier = await prisma.supplier.findUnique({
+      where: { id },
+      include: { supplierUser: { select: supplierKycSelect() } },
+    });
     if (!supplier || supplier.traderId !== req.auth.id) return res.status(404).json({ error: 'Supplier not found' });
 
     const trader = await prisma.trader.findUnique({ where: { id: req.auth.id } });
@@ -195,6 +233,7 @@ router.patch('/:id', requireAuth, requireTrader, async (req, res) => {
       if (!['restock', 'credit_repayment'].includes(mode)) return res.status(400).json({ error: 'Invalid mode' });
       if (mode === 'credit_repayment' && supplier.mode !== 'credit_repayment') {
         assertKycComplete(trader, 'Complete KYC to take supplier credit');
+        assertCreditEligibleSupplierUser(supplier.supplierUser);
       }
       data.mode = mode;
     }
@@ -218,7 +257,7 @@ router.patch('/:id', requireAuth, requireTrader, async (req, res) => {
     if (restockFallbackPct !== undefined) data.restockFallbackPct = restockFallbackPct;
 
     const updated = await prisma.supplier.update({ where: { id }, data });
-    res.json({ data: updated });
+    res.json({ data: withSupplierKycFlag({ ...updated, supplierUser: supplier.supplierUser }) });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     console.error(err);
@@ -295,9 +334,19 @@ router.post('/:id/dispute-relationship', requireAuth, requireSupplier, (req, res
 async function setRelationshipStatus(req, res, status) {
   const { id } = req.params;
   try {
-    const supplier = await prisma.supplier.findUnique({ where: { id } });
+    const supplier = await prisma.supplier.findUnique({
+      where: { id },
+      include: { supplierUser: true },
+    });
     if (!supplier || supplier.supplierUserId !== req.auth.id) {
       return res.status(404).json({ error: 'Relationship not found' });
+    }
+    if (status === 'accepted') {
+      try {
+        assertSupplierKycComplete(supplier.supplierUser, 'Complete KYC before accepting a trader relationship');
+      } catch (err) {
+        return res.status(err.status).json({ error: err.message, code: err.code });
+      }
     }
     const updated = await prisma.supplier.update({ where: { id }, data: { relationshipStatus: status } });
     res.json({ data: updated });

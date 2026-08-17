@@ -3,6 +3,11 @@ const prisma = require('../lib/prisma');
 const nomba = require('../services/nomba');
 const { requireAuth, requireSupplier } = require('../middleware/auth');
 const { ensureInviteCode } = require('../services/supplierInvites');
+const {
+  isSupplierKycComplete,
+  assertSupplierKycComplete,
+  toPublicSupplierUser,
+} = require('../lib/kyc');
 
 const router = express.Router();
 
@@ -46,7 +51,7 @@ router.get('/profile', async (req, res) => {
     if (!supplierUser) return res.status(404).json({ error: 'Profile not found' });
 
     await syncVerifiedBankToTraderRelationships(supplierUser);
-    res.json({ data: supplierUser });
+    res.json({ data: toPublicSupplierUser(supplierUser) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch profile' });
@@ -78,23 +83,29 @@ router.post('/resolve-name', async (req, res) => {
 
     await syncVerifiedBankToTraderRelationships(supplierUser);
 
-    res.json({ data: { accountName: result.accountName, verified: true } });
+    res.json({ data: { accountName: result.accountName, verified: true, kycComplete: isSupplierKycComplete(supplierUser) } });
   } catch (err) {
     console.error('Supplier resolve-name error:', err?.message || err);
     res.status(400).json({ error: err?.message || 'Failed to resolve account name' });
   }
 });
 
-// PATCH /api/supplier-dashboard/profile — set up business name, self-verified bank details,
+// PATCH /api/supplier-dashboard/profile — business name, BVN, self-verified bank details
 router.patch('/profile', async (req, res) => {
   const {
-    businessName, bankCode, bankName, accountNumber,
+    businessName, bvn, bankCode, bankName, accountNumber,
     resolvedAccountName, accountNameVerified,
     suggestedMode, suggestedAllocationPct,
   } = req.body;
 
   const data = {};
   if (businessName !== undefined) data.businessName = businessName?.trim() || null;
+  if (bvn !== undefined) {
+    if (!bvn || !/^\d{11}$/.test(bvn)) {
+      return res.status(400).json({ error: 'BVN must be exactly 11 digits' });
+    }
+    data.bvn = bvn;
+  }
   if (bankCode !== undefined) data.bankCode = bankCode || null;
   if (bankName !== undefined) data.bankName = bankName || null;
   if (accountNumber !== undefined) data.accountNumber = accountNumber?.trim() || null;
@@ -114,10 +125,16 @@ router.patch('/profile', async (req, res) => {
   }
 
   try {
+    const existing = await prisma.supplierUser.findUnique({ where: { id: req.auth.id } });
+    if (!existing) return res.status(404).json({ error: 'Profile not found' });
+
     // Re-verify via Nomba whenever bank details are being saved — never trust client flags alone.
-    const nextBankCode = data.bankCode !== undefined ? data.bankCode : undefined;
-    const nextAccountNumber = data.accountNumber !== undefined ? data.accountNumber : undefined;
-    if (nextBankCode && nextAccountNumber) {
+    const nextBankCode = data.bankCode !== undefined ? data.bankCode : existing.bankCode;
+    const nextAccountNumber = data.accountNumber !== undefined ? data.accountNumber : existing.accountNumber;
+    if (data.bankCode !== undefined || data.accountNumber !== undefined) {
+      if (!nextBankCode || !nextAccountNumber) {
+        return res.status(400).json({ error: 'bankCode and accountNumber are required' });
+      }
       try {
         const lookup = await nomba.resolveAccountName({
           accountNumber: nextAccountNumber,
@@ -138,17 +155,32 @@ router.patch('/profile', async (req, res) => {
       }
     }
 
+    const prospective = { ...existing, ...data };
+    if (prospective.bvn && prospective.bankCode && prospective.accountNumber && prospective.accountNameVerified) {
+      data.kycStatus = 'submitted';
+      prospective.kycStatus = 'submitted';
+    }
+
+    if (prospective.suggestedMode === 'credit_repayment') {
+      try {
+        assertSupplierKycComplete(prospective, 'Complete KYC before offering credit repayment terms');
+      } catch (err) {
+        return res.status(err.status).json({ error: err.message, code: err.code });
+      }
+    }
+
     let supplierUser = await prisma.supplierUser.update({ where: { id: req.auth.id }, data });
 
-    if (supplierUser.businessName && supplierUser.bankCode && supplierUser.accountNumber) {
+    if (isSupplierKycComplete(supplierUser) && supplierUser.businessName) {
       supplierUser = await ensureInviteCode(req.auth.id);
     }
 
     // Keep trader-facing Supplier rows in sync (they own the Unverified badge).
     await syncVerifiedBankToTraderRelationships(supplierUser);
 
-    res.json({ data: supplierUser });
+    res.json({ data: toPublicSupplierUser(supplierUser) });
   } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
     console.error(err);
     res.status(500).json({ error: 'Failed to update profile' });
   }

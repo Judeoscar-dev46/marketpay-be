@@ -1,6 +1,7 @@
 const prisma = require('../lib/prisma');
 const nomba = require('./nomba');
 const collateral = require('./collateral');
+const { isSupplierKycComplete } = require('../lib/kyc');
 
 const MIN_TRANSFER = 10000; // ₦100 in kobo — Nomba's minimum transfer amount
 const PLATFORM_FEE_PCT = Number(process.env.PLATFORM_FEE_PCT || 4);
@@ -68,7 +69,7 @@ async function processPayment(transactionId) {
   const tx = await prisma.transaction.findUnique({
     where: { id: transactionId },
     include: {
-      trader: { include: { suppliers: { where: { archivedAt: null }, include: { creditLedger: true } } } },
+      trader: { include: { suppliers: { where: { archivedAt: null }, include: { creditLedger: true, supplierUser: true } } } },
     },
   });
 
@@ -101,13 +102,19 @@ async function processPayment(transactionId) {
     const share = Math.floor(total * (supplier.allocationPct / 100));
 
     const ledger = supplier.creditLedger;
-    if (supplier.mode === 'credit_repayment' && ledger && (
-      ledger.status === 'disputed' || ledger.status === 'cleared' || ledger.status === 'overpaid'
-      || ledger.confirmationStatus !== 'confirmed'
-      || !ledger.goodsReleased
-    )) {
-      // Frozen/resolved, not yet confirmed, or goods not yet released — this sale's share folds back into till.
-      continue;
+    if (supplier.mode === 'credit_repayment' && ledger) {
+      if (!isSupplierKycComplete(supplier.supplierUser)) {
+        // Credit repayments stay in the till until the supplier completes KYC.
+        continue;
+      }
+      if (
+        ledger.status === 'disputed' || ledger.status === 'cleared' || ledger.status === 'overpaid'
+        || ledger.confirmationStatus !== 'confirmed'
+        || !ledger.goodsReleased
+      ) {
+        // Frozen/resolved, not yet confirmed, or goods not yet released — this sale's share folds back into till.
+        continue;
+      }
     }
 
     const floor = applyMinimumFloor(share, supplier.accumulatedPending);

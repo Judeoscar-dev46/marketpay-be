@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const prisma = require('../lib/prisma');
 const { requireAuth, requireTrader, requireSupplier } = require('../middleware/auth');
 const { emitToSupplierUser, emitToTrader } = require('../services/split');
-const { assertKycComplete } = require('../lib/kyc');
+const { assertKycComplete, assertSupplierKycComplete } = require('../lib/kyc');
 
 const router = express.Router();
 
@@ -14,7 +14,7 @@ function generateShareToken() {
 async function loadSupplierForTrader(supplierId, traderId) {
   const supplier = await prisma.supplier.findUnique({
     where: { id: supplierId },
-    include: { creditLedger: true, collateralProfile: true },
+    include: { creditLedger: true, collateralProfile: true, supplierUser: true },
   });
   if (!supplier || supplier.traderId !== traderId) return null;
   return supplier;
@@ -42,6 +42,10 @@ router.post('/entries', requireAuth, requireTrader, async (req, res) => {
     if (supplier.mode !== 'credit_repayment') {
       return res.status(400).json({ error: 'Supplier must be on Credit Repayment mode to log a credit entry' });
     }
+    assertSupplierKycComplete(
+      supplier.supplierUser,
+      'This supplier must sign in and complete KYC before you can take credit from them',
+    );
 
     let ledger;
     if (supplier.creditLedger && supplier.creditLedger.status === 'active') {
@@ -103,7 +107,7 @@ router.post('/entries', requireAuth, requireTrader, async (req, res) => {
         : null,
     });
   } catch (err) {
-    if (err.code === 'KYC_REQUIRED') {
+    if (err.status === 403 && err.code) {
       return res.status(err.status).json({ error: err.message, code: err.code });
     }
     console.error(err);
@@ -129,10 +133,15 @@ router.post('/entries/:ledgerId/goods-released', requireAuth, requireSupplier, a
   try {
     const ledger = await prisma.creditLedger.findUnique({
       where: { id: ledgerId },
-      include: { supplier: true },
+      include: { supplier: { include: { supplierUser: true } } },
     });
     if (!ledger || ledger.supplier.supplierUserId !== req.auth.id) {
       return res.status(404).json({ error: 'Credit entry not found' });
+    }
+    try {
+      assertSupplierKycComplete(ledger.supplier.supplierUser, 'Complete KYC before confirming goods handover');
+    } catch (err) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
     }
     if (ledger.goodsReleased) {
       return res.json({ data: ledger });
@@ -159,10 +168,18 @@ async function setConfirmationStatus(req, res, status) {
   try {
     const ledger = await prisma.creditLedger.findUnique({
       where: { id: ledgerId },
-      include: { supplier: { include: { trader: true, collateralProfile: true } } },
+      include: { supplier: { include: { trader: true, collateralProfile: true, supplierUser: true } } },
     });
     if (!ledger || ledger.supplier.supplierUserId !== req.auth.id) {
       return res.status(404).json({ error: 'Credit entry not found' });
+    }
+
+    if (status === 'confirmed') {
+      try {
+        assertSupplierKycComplete(ledger.supplier.supplierUser, 'Complete KYC before confirming this credit entry');
+      } catch (err) {
+        return res.status(err.status).json({ error: err.message, code: err.code });
+      }
     }
 
     // Collateral must be reviewed before a supplier can CONFIRM (never blocks disputing).

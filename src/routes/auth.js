@@ -5,7 +5,7 @@ const nomba = require('../services/nomba');
 const otp = require('../services/otp');
 const { issueSession, requireAuth, requireTrader } = require('../middleware/auth');
 const supplierInvites = require('../services/supplierInvites');
-const { isKycComplete } = require('../lib/kyc');
+const { isKycComplete, toPublicSupplierUser } = require('../lib/kyc');
 
 const USE_STUB = process.env.USE_STUB_ACCOUNTS === 'true' || !process.env.NOMBA_CLIENT_ID;
 
@@ -258,7 +258,7 @@ router.post('/otp/verify', async (req, res) => {
         data: { supplierUserId: supplierUser.id },
       });
       const token = issueSession({ id: supplierUser.id, role: 'supplier' });
-      return res.json({ data: supplierUser, token });
+      return res.json({ data: toPublicSupplierUser(supplierUser), token });
     }
 
     const trader = await prisma.trader.findUnique({ where: { phone: phone.trim() }, select: TRADER_SELECT });

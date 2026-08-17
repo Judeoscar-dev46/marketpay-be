@@ -60,6 +60,26 @@ async function main() {
     // Idempotent on its own, independent of whether the trader itself was just created.
     const existingSuppliers = await prisma.supplier.findMany({ where: { traderId: trader.id } });
     if (persona.name === 'Amaka' && existingSuppliers.length === 0) {
+      const mamaKemiUser = await prisma.supplierUser.upsert({
+        where: { phone: '08011112222' },
+        create: {
+          phone: '08011112222',
+          name: 'Kemi Adebayo',
+          businessName: 'Mama Kemi Foods',
+          bvn: '12345678901',
+          kycStatus: 'submitted',
+          bankCode: '058',
+          bankName: 'GTBank',
+          accountNumber: '0012345678',
+          resolvedAccountName: 'Kemi Adebayo Foods Ltd',
+          accountNameVerified: true,
+        },
+        update: {
+          bvn: '12345678901',
+          kycStatus: 'submitted',
+          accountNameVerified: true,
+        },
+      });
       const mamaKemi = await prisma.supplier.create({
         data: {
           traderId: trader.id,
@@ -73,6 +93,7 @@ async function main() {
           mode: 'credit_repayment',
           allocationPct: 15,
           payoutSchedule: 'immediate',
+          supplierUserId: mamaKemiUser.id,
         },
       });
       const ledger = await prisma.creditLedger.create({
