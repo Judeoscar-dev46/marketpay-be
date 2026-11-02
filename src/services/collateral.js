@@ -107,7 +107,14 @@ async function recompute(collateralProfileId, { actor = 'system', note } = {}) {
 
 // Called from the Nomba webhook path when cash lands in a trader's collateral virtual account.
 async function recordCashReceived({ traderId, amount, webhookRef }) {
-  const trader = await prisma.trader.findUnique({ where: { id: traderId }, include: { suppliers: { include: { collateralProfile: true } } } });
+  const trader = await prisma.trader.findUnique({
+    where: { id: traderId },
+    include: {
+      suppliers: {
+        include: { collateralProfile: true },
+      },
+    },
+  });
   if (!trader) throw new CollateralError(404, 'Trader not found');
 
   // MVP: a trader has (at most) one active collateral profile awaiting cash at a time —

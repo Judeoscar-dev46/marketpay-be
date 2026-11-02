@@ -123,48 +123,114 @@ async function processPayment(transactionId) {
       continue;
     }
 
-    const reference = `${tx.id}-supplier-${supplier.id}`;
-    let result;
-    if (supplier.payoutSchedule === 'immediate') {
-      result = await safeTransfer(() =>
-        nomba.payToBank({
-          fromAccountId: trader.mainVirtualAccountId,
-          accountNumber: supplier.accountNumber,
-          accountName: supplier.resolvedAccountName || supplier.name,
-          bankCode: supplier.bankCode,
-          amount: floor.transferNow,
-          reference,
-          senderName: trader.name,
-          narration: `MarketPay ${supplier.mode === 'credit_repayment' ? 'repayment' : 'restock'} — ${supplier.name}`,
-        })
-      );
-    } else {
-      result = await safeTransfer(() =>
-        nomba.initiateTransfer({
-          from: trader.mainVirtualAccountId,
-          to: supplier.virtualAccountId,
-          amount: floor.transferNow,
-          reference,
-        })
-      );
+    // Supplier-paid MarketPay credit setup fee: skim from repayments/restock while accruing.
+    let setupFeeSkim = 0;
+    if (
+      ledger
+      && ledger.platformSetupFeeStatus === 'accruing'
+      && (ledger.platformSetupFeeCollected || 0) < (ledger.platformSetupFeeAmount || 0)
+    ) {
+      const feeRemaining = ledger.platformSetupFeeAmount - (ledger.platformSetupFeeCollected || 0);
+      setupFeeSkim = Math.min(feeRemaining, floor.transferNow);
     }
 
-    splitRows.push({ type: 'supplier', supplierId: supplier.id, amount: floor.transferNow, transferRef: result.transferRef, status: result.status });
+    const reference = `${tx.id}-supplier-${supplier.id}`;
+    let result = { transferRef: null, status: 'skipped' };
+
+    if (setupFeeSkim > 0) {
+      let feeOk = true;
+      if (process.env.PLATFORM_FEE_ACCOUNT_ID) {
+        const feeResult = await safeTransfer(() =>
+          nomba.initiateTransfer({
+            from: trader.mainVirtualAccountId,
+            to: process.env.PLATFORM_FEE_ACCOUNT_ID,
+            amount: setupFeeSkim,
+            reference: `${tx.id}-setup-fee-${supplier.id}`,
+          })
+        );
+        splitRows.push({
+          type: 'credit_setup_fee',
+          supplierId: supplier.id,
+          amount: setupFeeSkim,
+          transferRef: feeResult.transferRef,
+          status: feeResult.status,
+        });
+        feeOk = feeResult.status === 'success';
+      } else {
+        splitRows.push({
+          type: 'credit_setup_fee',
+          supplierId: supplier.id,
+          amount: setupFeeSkim,
+          transferRef: `stub-setup-fee-${supplier.id}`,
+          status: 'success',
+        });
+      }
+
+      if (feeOk) {
+        ledger.platformSetupFeeCollected = (ledger.platformSetupFeeCollected || 0) + setupFeeSkim;
+        if (ledger.platformSetupFeeCollected >= ledger.platformSetupFeeAmount) {
+          ledger.platformSetupFeeStatus = 'paid';
+        }
+      } else {
+        setupFeeSkim = 0;
+      }
+    }
+
+    const payoutAmount = floor.transferNow - setupFeeSkim;
+    if (payoutAmount > 0) {
+      if (supplier.payoutSchedule === 'immediate') {
+        result = await safeTransfer(() =>
+          nomba.payToBank({
+            fromAccountId: trader.mainVirtualAccountId,
+            accountNumber: supplier.accountNumber,
+            accountName: supplier.resolvedAccountName || supplier.name,
+            bankCode: supplier.bankCode,
+            amount: payoutAmount,
+            reference,
+            senderName: trader.name,
+            narration: `MarketPay ${supplier.mode === 'credit_repayment' ? 'repayment' : 'restock'} — ${supplier.name}`,
+          })
+        );
+      } else {
+        result = await safeTransfer(() =>
+          nomba.initiateTransfer({
+            from: trader.mainVirtualAccountId,
+            to: supplier.virtualAccountId,
+            amount: payoutAmount,
+            reference,
+          })
+        );
+      }
+
+      splitRows.push({ type: 'supplier', supplierId: supplier.id, amount: payoutAmount, transferRef: result.transferRef, status: result.status });
+    }
+
     const updateData = { accumulatedPending: floor.newPending };
     // Non-immediate schedules land in the supplier's own held sub-account rather than their
     // bank directly — track the running balance so there's something to pay out later.
-    if (supplier.payoutSchedule !== 'immediate' && result.status === 'success') {
-      updateData.heldBalance = { increment: floor.transferNow };
+    if (supplier.payoutSchedule !== 'immediate' && result.status === 'success' && payoutAmount > 0) {
+      updateData.heldBalance = { increment: payoutAmount };
     }
     supplierUpdates.push({ id: supplier.id, data: updateData });
 
-    if (supplier.mode === 'credit_repayment' && ledger && result.status === 'success') {
-      const newRepaid = ledger.totalRepaid + floor.transferNow;
-      const newOutstanding = ledger.outstandingBalance - floor.transferNow;
+    if (setupFeeSkim > 0) {
+      creditEvents.push({
+        kind: 'setup_fee_skim',
+        ledgerId: ledger.id,
+        setupFeeCollected: ledger.platformSetupFeeCollected,
+        setupFeeStatus: ledger.platformSetupFeeStatus,
+        setupFeeAmount: ledger.platformSetupFeeAmount,
+      });
+    }
+
+    if (supplier.mode === 'credit_repayment' && ledger && result.status === 'success' && payoutAmount > 0) {
+      const newRepaid = ledger.totalRepaid + payoutAmount;
+      const newOutstanding = ledger.outstandingBalance - payoutAmount;
       const cleared = newOutstanding <= 0;
       creditEvents.push({
+        kind: 'repayment',
         ledgerId: ledger.id,
-        repaymentAmount: floor.transferNow,
+        repaymentAmount: payoutAmount,
         newTotalRepaid: newRepaid,
         newOutstanding: Math.max(newOutstanding, 0),
         overpaidAmount: cleared ? Math.max(-newOutstanding, 0) : 0,
@@ -207,7 +273,7 @@ async function processPayment(transactionId) {
           status: row.status,
         },
       });
-      const event = creditEvents.find((e) => e.supplierId === row.supplierId && row.type === 'supplier');
+      const event = creditEvents.find((e) => e.kind === 'repayment' && e.supplierId === row.supplierId && row.type === 'supplier');
       if (event) event.splitTransferId = created.id;
     }
 
@@ -224,6 +290,27 @@ async function processPayment(transactionId) {
     });
 
     for (const event of creditEvents) {
+      if (event.kind === 'setup_fee_skim') {
+        await txClient.creditLedger.update({
+          where: { id: event.ledgerId },
+          data: {
+            platformSetupFeeCollected: event.setupFeeCollected,
+            platformSetupFeeStatus: event.setupFeeStatus,
+            platformSetupFeePaidAt: event.setupFeeStatus === 'paid' ? new Date() : undefined,
+          },
+        });
+        await txClient.creditLedgerEvent.create({
+          data: {
+            creditLedgerId: event.ledgerId,
+            eventType: event.setupFeeStatus === 'paid' ? 'setup_fee_paid' : 'setup_fee_accruing',
+            newAmount: event.setupFeeCollected,
+            actor: 'system',
+            note: `Setup fee collected via sale split (${event.setupFeeCollected}/${event.setupFeeAmount} kobo)`,
+          },
+        });
+        continue;
+      }
+
       await txClient.creditRepayment.create({
         data: {
           creditLedgerId: event.ledgerId,

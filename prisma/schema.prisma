@@ -115,11 +115,41 @@ model CreditLedger {
   status             String    @default("active") // active | disputed | cleared | overpaid
   confirmationStatus String    @default("pending") // pending | confirmed | disputed
   collateralProfileId String?  // trace-only — not enforced at creation
+  // Credit setup fees (MyCover + MarketPay) are paid by the supplier — calculated on full creditAmount
+  platformSetupFeeAmount    Int       @default(0) // kobo — MarketPay % of creditAmount
+  platformSetupFeeCollected Int       @default(0) // kobo — amount recovered so far
+  platformSetupFeeStatus    String    @default("pending") // pending | paid | accruing
+  platformSetupFeePaidAt    DateTime?
+  platformSetupFeeMethod    String?   // held_balance | accrue | simulate
   createdAt          DateTime  @default(now())
   clearedAt          DateTime?
   repayments         CreditRepayment[]
   events             CreditLedgerEvent[]
   agreementSnapshots CreditAgreementSnapshot[]
+  creditLifePolicy   CreditLifePolicy?
+}
+
+model CreditLifePolicy {
+  id             String    @id @default(cuid())
+  creditLedgerId String    @unique
+  creditLedger   CreditLedger @relation(fields: [creditLedgerId], references: [id])
+  status         String    @default("pending") // pending | active | expired | cancelled
+  merchantRef    String    @unique
+  policyId       String?
+  policyNumber   String?
+  customerId     String?
+  productId      String?
+  sumInsured     Int       @default(0) // kobo
+  premiumAmount  Int       @default(0) // kobo
+  expiresAt      DateTime?
+  certificateUrl String?
+  claimLink      String?
+  lastEventId    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([policyId])
+  @@index([lastEventId])
 }
 
 model CreditAgreementSnapshot {

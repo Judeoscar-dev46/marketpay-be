@@ -193,7 +193,7 @@ router.get('/relationships', async (req, res) => {
       where: { supplierUserId: req.auth.id, archivedAt: null },
       include: {
         trader: { select: { id: true, name: true, business: true, market: true, avatar: true } },
-        creditLedger: true,
+        creditLedger: { include: { creditLifePolicy: true } },
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -225,7 +225,7 @@ router.get('/relationships/:supplierId', async (req, res) => {
       where: { id: req.params.supplierId },
       include: {
         trader: { select: { id: true, name: true, business: true, market: true, avatar: true } },
-        creditLedger: true,
+        creditLedger: { include: { creditLifePolicy: true } },
       },
     });
     if (!supplier || supplier.supplierUserId !== req.auth.id) return res.status(404).json({ error: 'Relationship not found' });

@@ -1,6 +1,7 @@
 const express = require('express');
 const prisma = require('../lib/prisma');
 const nomba = require('../services/nomba');
+const mycover = require('../services/mycover');
 const { processPayment } = require('../services/split');
 const collateral = require('../services/collateral');
 
@@ -149,6 +150,81 @@ router.post('/nomba', express.raw({ type: 'application/json' }), async (req, res
     );
   } catch (err) {
     console.error('Webhook error:', err);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+router.get('/mycover', (_req, res) => {
+  res.status(200).json({ status: 'ok', service: 'marketpay-mycover-webhook' });
+});
+
+// POST /api/webhook/mycover — HMAC-verified MyCover Credit Life events
+router.post('/mycover', express.raw({ type: 'application/json' }), async (req, res) => {
+  const rawBody = req.body;
+  const signature = req.headers['x-mycoverai-signature'] || '';
+
+  if (isWebhookProbe(rawBody, signature)) {
+    return res.status(200).json({ status: 'ok' });
+  }
+
+  try {
+    if (!mycover.verifyWebhookSignature(rawBody, signature)) {
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+
+    const event = JSON.parse(rawBodyToString(rawBody) || '{}');
+    const eventType = event?.event;
+    const eventId = event?.event_id;
+
+    if (eventId) {
+      const seen = await prisma.creditLifePolicy.findFirst({ where: { lastEventId: eventId } });
+      if (seen) return res.json({ status: 'already_processed' });
+    }
+
+    if (!['purchase.successful', 'purchase.renewed', 'policy.updated'].includes(eventType)) {
+      return res.json({ status: 'ignored' });
+    }
+
+    const fields = mycover.extractPurchaseFields(event);
+    const orFilters = [];
+    for (const ref of fields.merchantRefs) orFilters.push({ merchantRef: ref });
+    if (fields.policyId) orFilters.push({ policyId: fields.policyId });
+
+    if (orFilters.length === 0) {
+      console.warn('MyCover webhook: no merchantRef or policy_id to match', eventType, eventId);
+      return res.json({ status: 'no_match' });
+    }
+
+    const policy = await prisma.creditLifePolicy.findFirst({ where: { OR: orFilters } });
+    if (!policy) {
+      console.warn('MyCover webhook: no matching CreditLifePolicy', fields.merchantRefs, fields.policyId);
+      return res.json({ status: 'no_match' });
+    }
+
+    const activate = eventType === 'purchase.successful' || eventType === 'purchase.renewed';
+    const nextExpires = fields.expiresAt || policy.expiresAt;
+    const expired = nextExpires && new Date(nextExpires) <= new Date();
+
+    await prisma.creditLifePolicy.update({
+      where: { id: policy.id },
+      data: {
+        status: activate ? (expired ? 'expired' : 'active') : (expired ? 'expired' : policy.status),
+        lastEventId: eventId || policy.lastEventId,
+        policyId: fields.policyId || policy.policyId,
+        policyNumber: fields.policyNumber || policy.policyNumber,
+        customerId: fields.customerId || policy.customerId,
+        productId: fields.productId || policy.productId,
+        sumInsured: fields.sumInsured || policy.sumInsured,
+        premiumAmount: fields.premiumAmount || policy.premiumAmount,
+        expiresAt: nextExpires,
+        certificateUrl: fields.certificateUrl || policy.certificateUrl,
+        claimLink: fields.claimLink || policy.claimLink,
+      },
+    });
+
+    return res.json({ status: 'ok' });
+  } catch (err) {
+    console.error('MyCover webhook error:', err);
     res.status(500).json({ error: 'Webhook processing failed' });
   }
 });

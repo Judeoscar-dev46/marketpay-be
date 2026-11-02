@@ -56,7 +56,12 @@ router.get('/supplier/:supplierId', requireAuth, async (req, res) => {
 
     if (!supplier.collateralProfile) return res.json({ data: null });
 
-    res.json({ data: { ...supplier.collateralProfile, collateralAccountNumber: supplier.trader.collateralAccountNumber } });
+    res.json({
+      data: {
+        ...supplier.collateralProfile,
+        collateralAccountNumber: supplier.trader.collateralAccountNumber,
+      },
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch collateral profile' });

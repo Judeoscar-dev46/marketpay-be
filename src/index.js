@@ -20,6 +20,7 @@ const suppliersRouter = require('./routes/suppliers');
 const creditRouter = require('./routes/credit');
 const creditAgreementRouter = require('./routes/credit-agreement');
 const collateralRouter = require('./routes/collateral');
+const creditLifeRouter = require('./routes/credit-life');
 const supplierDashboardRouter = require('./routes/supplier-dashboard');
 const waitlistRouter = require('./routes/waitlist');
 
@@ -53,6 +54,7 @@ app.use('/api/suppliers', suppliersRouter);
 app.use('/api/credit', creditRouter);
 app.use('/api/credit-agreement', creditAgreementRouter);
 app.use('/api/collateral', collateralRouter);
+app.use('/api/credit-life', creditLifeRouter);
 app.use('/api/supplier-dashboard', supplierDashboardRouter);
 app.use('/api/waitlist', waitlistRouter);
 
